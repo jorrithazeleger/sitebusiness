@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 import webview
 
@@ -67,8 +68,10 @@ class Api:
 
 
 class Native:
-    def __init__(self, port, find_book, forget_doc, icon, rescue=None):
+    def __init__(self, port, find_book, forget_doc, icon, rescue=None, opener=None):
         self.rescue = rescue or (lambda book: None)
+        self.opener = opener            # (pad, doc of None) -> doc
+        self.placeholder = None         # leeg beginvenster dat een geopend bestand mag overnemen
         self.port = port
         self.find_book = find_book      # doc -> Book of None
         self.forget_doc = forget_doc    # doc vergeten na sluiten van het venster
@@ -80,11 +83,11 @@ class Native:
     def _url(self, doc):
         return "http://127.0.0.1:%d/?doc=%s" % (self.port, doc)
 
-    def _create(self, doc):
+    def _create(self, doc, hidden=False):
         w = webview.create_window(
             "Rekenblad", self._url(doc), js_api=Api(self, doc),
             width=1280, height=820, min_size=(760, 480),
-            text_select=True, background_color="#F6F7F8",
+            text_select=True, background_color="#F6F7F8", hidden=hidden,
         )
         w.events.closing += lambda: self._on_closing(doc)
         w.events.closed += lambda: self._on_closed(doc)
@@ -192,7 +195,76 @@ class Native:
         self.forget_doc(doc)
 
     # -- starten
-    def run(self, docs):
+    # -- bestanden die macOS aanlevert (dubbelklik in Finder of Mail)
+    def open_paths(self, paths):
+        """Draait op een eigen thread: elk bestand in een venster."""
+        for path in paths:
+            with self.lock:
+                reuse = self.placeholder
+                book = self.find_book(reuse) if reuse else None
+                if book is not None and book.loaded:
+                    reuse = None
+                self.placeholder = None
+            try:
+                doc = self.opener(path, reuse)
+            except Exception as exc:
+                self._alert("Kon %s niet openen" % os.path.basename(path), str(exc))
+                continue
+            if reuse and doc == reuse and reuse in self.windows:
+                w = self.windows[reuse]
+                try:
+                    w.load_url(self._url(reuse))
+                    w.show()
+                except Exception:
+                    pass
+                self._activate()
+            else:
+                self.open_doc(doc)
+
+    def _alert(self, title, text):
+        try:
+            _AppKit, AppHelper = _appkit()
+            AppHelper.callAfter(show_error, title, text)
+        except Exception:
+            pass
+
+    def _install_open_handler(self):
+        import objc
+        from webview.platforms.cocoa import BrowserView
+        native = self
+
+        def application_openFiles_(self, app, filenames):
+            paths = [str(f) for f in filenames]
+            threading.Thread(target=native.open_paths, args=(paths,), daemon=True).start()
+            app.replyToOpenOrPrint_(0)
+
+        objc.classAddMethods(BrowserView.AppDelegate, [
+            objc.selector(application_openFiles_, selector=b"application:openFiles:", signature=b"v@:@@"),
+        ])
+
+    # -- starten
+    def run(self, docs, app_mode=False):
+        if app_mode:
+            # Echte app: macOS stuurt geopende bestanden pas na het starten. Het eerste venster blijft
+            # even verborgen, zodat een bestand dat je dubbelklikte het lege venster kan overnemen.
+            self._install_open_handler()
+            first = docs[0]
+            self.placeholder = first
+            self._create(first, hidden=True)
+
+            def reveal():
+                time.sleep(0.8)
+                w = self.windows.get(first)
+                if w is not None:
+                    try:
+                        w.show()
+                    except Exception:
+                        pass
+                    self._activate()
+
+            threading.Thread(target=reveal, daemon=True).start()
+            webview.start(localization=NL, private_mode=True)
+            return
         brand_process()
         for doc in docs:
             self._create(doc)

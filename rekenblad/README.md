@@ -35,9 +35,9 @@ Daarna mag je de uitgepakte map weggooien.
   `~/.rekenblad/herstel`.
 - De eerste keer dat je een bestand uit Downloads opent, vraagt macOS of Rekenblad bij die map mag.
   Klik op Sta toe.
-- **Dock**: start je Rekenblad via een vastgezet icoon in het Dock, dan zie je terwijl het draait een
-  tweede Rekenblad-icoon. Dat is normaal: het eerste icoon start het programma, het tweede is het
-  programma zelf.
+- **Dock**: Rekenblad heeft één eigen icoon in het Dock. Je kunt het daar vastzetten zoals elke app.
+  (Alleen als je Mac geen Command Line Tools heeft, bouwt het installatiescript een eenvoudigere versie;
+  dan staat er tijdens het werken een Python-icoon in het Dock.)
 - Lukt het openen van een eigen venster niet, dan opent Rekenblad zichzelf in de browser.
 
 Liever zonder installatie? Start dan `Rekenblad.command` (op dezelfde manier als stap 3). Rekenblad draait
@@ -97,7 +97,8 @@ dan zolang dat Terminal-venster openstaat.
 ```
 app/server.py     webserver op 127.0.0.1 en de API (ook --open, --status, --stop)
 app/venster.py    eigen Mac-vensters via pywebview
-app/mac/          de Mac-app (AppleScript), installatiehulp en icoon
+app/mac/          bouw_app.py bouwt Rekenblad.app (klein C-startprogramma dat Python laadt),
+                  plus terugval-app (AppleScript), installatiehulp en icoon
 app/workbook.py   openen, bewerken, ongedaan maken, opslaan
 app/refs.py       verwijzingen in formules verschuiven
 app/calc.py       formules uitrekenen

@@ -684,7 +684,17 @@ def cmd_stop(force):
     return 0
 
 
-def serve_window(port, files):
+def open_path_in_doc(path, doc=None):
+    if doc is None:
+        doc, book = new_doc()
+    else:
+        book = get_book(doc)
+    with book.lock:
+        load_into(book, path, None)
+    return doc
+
+
+def serve_window(port, files, app_mode=False):
     """Eigen vensters: de webserver draait op de achtergrond, de vensters op de hoofdthread."""
     global PORT, SERVER, GUI
     PORT = port
@@ -703,7 +713,8 @@ def serve_window(port, files):
         docs.append(new_doc()[0])
     try:
         import venster
-        GUI = venster.Native(PORT, find_book, forget_doc, ICON, rescue=lambda b: rescue_dirty(b))
+        GUI = venster.Native(PORT, find_book, forget_doc, ICON, rescue=lambda b: rescue_dirty(b),
+                             opener=open_path_in_doc)
     except Exception:
         traceback.print_exc()
         GUI = None
@@ -715,7 +726,7 @@ def serve_window(port, files):
         threading.Event().wait()
         return
     try:
-        GUI.run(docs)
+        GUI.run(docs, app_mode=app_mode)
     except Exception:
         traceback.print_exc()
     saved = rescue_dirty()
@@ -768,6 +779,7 @@ def main():
     ap.add_argument("--open", action="store_true", help="op de achtergrond starten en bestanden openen")
     ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--window", action="store_true", help="in eigen vensters (macOS)")
+    ap.add_argument("--app", action="store_true", help=argparse.SUPPRESS)  # gestart door Rekenblad.app
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--stop", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -780,6 +792,13 @@ def main():
         sys.exit(cmd_stop(args.force))
     if args.open:
         cmd_open(args.bestanden)
+        return
+
+    if args.app:
+        port = next((p for p in range(FIRST_PORT, FIRST_PORT + 50) if _free(p)), None)
+        if port is None:
+            sys.exit(1)
+        serve_window(port, [], app_mode=True)
         return
 
     running = find_running()

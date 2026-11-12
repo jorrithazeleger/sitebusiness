@@ -36,7 +36,11 @@ cp -R "$HERE/app" "$INSTALLED"
 find "$INSTALLED" -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null
 
 echo "  App bouwen..."
-"$RB_PYTHON" - "$HERE/app/mac/Rekenblad.applescript" "$TMP/Rekenblad.applescript" "$RB_PYTHON" "$INSTALLED/server.py" <<'PY'
+
+# Eenvoudige app (AppleScript) als het bouwen van de echte app hier niet lukt.
+# Nadeel: in het Dock staat dan het Python-icoon zolang Rekenblad draait.
+bouw_eenvoudige_app() {
+  "$RB_PYTHON" - "$HERE/app/mac/Rekenblad.applescript" "$TMP/Rekenblad.applescript" "$RB_PYTHON" "$INSTALLED/server.py" <<'PY'
 import sys
 src, dst, python, server = sys.argv[1:5]
 esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
@@ -44,45 +48,51 @@ text = open(src, encoding="utf-8").read()
 text = text.replace("__PYTHON__", esc(python)).replace("__SERVER__", esc(server))
 open(dst, "w", encoding="utf-8").write(text)
 PY
+  rm -rf "$APP"
+  if ! osacompile -o "$APP" "$TMP/Rekenblad.applescript"; then
+    echo "  Het bouwen van de app is mislukt."
+    return 1
+  fi
+
+  # Vertel macOS welke bestanden Rekenblad kan openen.
+  PL="$APP/Contents/Info.plist"
+  PB=/usr/libexec/PlistBuddy
+  $PB -c "Delete :CFBundleIdentifier" "$PL" >/dev/null 2>&1
+  $PB -c "Add :CFBundleIdentifier string nl.rekenblad.app" "$PL"
+  $PB -c "Delete :CFBundleName" "$PL" >/dev/null 2>&1
+  $PB -c "Add :CFBundleName string Rekenblad" "$PL"
+  $PB -c "Delete :CFBundleDocumentTypes" "$PL" >/dev/null 2>&1
+  $PB -c "Add :CFBundleDocumentTypes array" "$PL"
+  $PB -c "Add :CFBundleDocumentTypes:0 dict" "$PL"
+  $PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Spreadsheet" "$PL"
+  $PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PL"
+  $PB -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate" "$PL"
+  $PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" "$PL"
+  i=0
+  for t in org.openxmlformats.spreadsheetml.sheet org.openxmlformats.spreadsheetml.sheet.macroenabled public.comma-separated-values-text; do
+    $PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:$i string $t" "$PL"
+    i=$((i + 1))
+  done
+
+  # Eigen icoon
+  if sips -s format icns "$HERE/app/mac/icon.png" --out "$TMP/rekenblad.icns" >/dev/null 2>&1; then
+    for name in applet droplet; do cp "$TMP/rekenblad.icns" "$APP/Contents/Resources/$name.icns"; done
+    $PB -c "Delete :CFBundleIconName" "$PL" >/dev/null 2>&1
+    rm -f "$APP/Contents/Resources/Assets.car"
+    $PB -c "Delete :CFBundleIconFile" "$PL" >/dev/null 2>&1
+    $PB -c "Add :CFBundleIconFile string applet" "$PL"
+  fi
+
+  # Opnieuw ondertekenen (nodig na het aanpassen, zeker op Macs met Apple-chip) en aanmelden bij macOS.
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+  LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ -x "$LSREG" ] && "$LSREG" -f "$APP" >/dev/null 2>&1
+}
+
 rm -rf "$APP"
-if ! osacompile -o "$APP" "$TMP/Rekenblad.applescript"; then
-  echo "  Het bouwen van de app is mislukt."
-  pauze; exit 1
+if ! "$RB_PYTHON" "$INSTALLED/mac/bouw_app.py" "$APP" "$INSTALLED/server.py" "$INSTALLED/mac/icon.png"; then
+  bouw_eenvoudige_app || { pauze; exit 1; }
 fi
-
-# Vertel macOS welke bestanden Rekenblad kan openen.
-PL="$APP/Contents/Info.plist"
-PB=/usr/libexec/PlistBuddy
-$PB -c "Delete :CFBundleIdentifier" "$PL" >/dev/null 2>&1
-$PB -c "Add :CFBundleIdentifier string nl.rekenblad.app" "$PL"
-$PB -c "Delete :CFBundleName" "$PL" >/dev/null 2>&1
-$PB -c "Add :CFBundleName string Rekenblad" "$PL"
-$PB -c "Delete :CFBundleDocumentTypes" "$PL" >/dev/null 2>&1
-$PB -c "Add :CFBundleDocumentTypes array" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0 dict" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Spreadsheet" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" "$PL"
-i=0
-for t in org.openxmlformats.spreadsheetml.sheet org.openxmlformats.spreadsheetml.sheet.macroenabled public.comma-separated-values-text; do
-  $PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:$i string $t" "$PL"
-  i=$((i + 1))
-done
-
-# Eigen icoon
-if sips -s format icns "$HERE/app/mac/icon.png" --out "$TMP/rekenblad.icns" >/dev/null 2>&1; then
-  for name in applet droplet; do cp "$TMP/rekenblad.icns" "$APP/Contents/Resources/$name.icns"; done
-  $PB -c "Delete :CFBundleIconName" "$PL" >/dev/null 2>&1
-  rm -f "$APP/Contents/Resources/Assets.car"
-  $PB -c "Delete :CFBundleIconFile" "$PL" >/dev/null 2>&1
-  $PB -c "Add :CFBundleIconFile string applet" "$PL"
-fi
-
-# Opnieuw ondertekenen (nodig na het aanpassen, zeker op Macs met Apple-chip) en aanmelden bij macOS.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1
-LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-[ -x "$LSREG" ] && "$LSREG" -f "$APP" >/dev/null 2>&1
 touch "$APP"
 
 echo "  Geinstalleerd in $APP"
