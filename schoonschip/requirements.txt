@@ -1,0 +1,2 @@
+# eigen venster op de Mac (zonder dit opent Schoonschip in je browser)
+pywebview>=5.0; sys_platform == "darwin"
