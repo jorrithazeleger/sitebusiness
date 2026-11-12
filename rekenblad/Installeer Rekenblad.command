@@ -45,7 +45,7 @@ text = text.replace("__PYTHON__", esc(python)).replace("__SERVER__", esc(server)
 open(dst, "w", encoding="utf-8").write(text)
 PY
 rm -rf "$APP"
-if ! osacompile -s -o "$APP" "$TMP/Rekenblad.applescript"; then
+if ! osacompile -o "$APP" "$TMP/Rekenblad.applescript"; then
   echo "  Het bouwen van de app is mislukt."
   pauze; exit 1
 fi
@@ -110,6 +110,6 @@ fi
 
 echo ""
 echo "  Klaar! Rekenblad staat bij je Programma's en is te vinden via Spotlight."
-echo "  Tip: sleep het icoon naar je Dock. Stoppen doe je met ⌘Q, zoals elke app."
+echo "  Elk bestand opent in een eigen venster. Stoppen doe je met ⌘Q, zoals elke app."
 open "$APP"
 pauze

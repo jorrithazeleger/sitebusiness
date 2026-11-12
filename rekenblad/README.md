@@ -22,16 +22,23 @@ Daarna mag je de uitgepakte map weggooien.
 
 ## Gebruiken
 
-- **Dubbelklik op een Excel-bestand** in Downloads, de Finder of als bijlage in Mail: het opent in Rekenblad,
-  elk bestand in een eigen browsertabblad.
-- Wil je Rekenblad niet als standaard? Klik met de rechtermuisknop op een bestand en kies
-  **Open met > Rekenblad**. Of sleep een bestand op het Rekenblad-icoon in je Dock.
-- Rekenblad start je ook gewoon via Spotlight of Launchpad. Stoppen doe je met `⌘Q`, zoals elke app;
-  heb je nog iets niet opgeslagen, dan vraagt Rekenblad eerst of je dat zeker weet.
+- Rekenblad opent in **eigen vensters**, net als Excel of Numbers: elk bestand in een eigen venster,
+  met het Rekenblad-icoon in het Dock.
+- **Dubbelklik op een Excel-bestand** in Downloads, de Finder of als bijlage in Mail om het in Rekenblad
+  te openen. Heb je Rekenblad niet als standaard ingesteld, kies dan rechtermuisklik > **Open met > Rekenblad**.
+- `⌘N` opent een nieuw leeg venster, `⌘O` opent een bestand (in een nieuw venster als dit venster al
+  iets toont), `⌘W` sluit het venster en `⌘Q` stopt Rekenblad. Heb je nog iets niet bewaard, dan vraagt
+  Rekenblad eerst: Bewaar, Annuleer of Niet bewaren.
 - **Bijlagen uit je mail** zijn tijdelijke kopieën. Daarom vraagt Rekenblad bij Opslaan waar je het
   bestand wilt bewaren.
+- **Vangnet**: stopt Rekenblad onverwacht terwijl er nog iets niet bewaard is, dan staat een kopie in
+  `~/.rekenblad/herstel`.
 - De eerste keer dat je een bestand uit Downloads opent, vraagt macOS of Rekenblad bij die map mag.
   Klik op Sta toe.
+- **Dock**: start je Rekenblad via een vastgezet icoon in het Dock, dan zie je terwijl het draait een
+  tweede Rekenblad-icoon. Dat is normaal: het eerste icoon start het programma, het tweede is het
+  programma zelf.
+- Lukt het openen van een eigen venster niet, dan opent Rekenblad zichzelf in de browser.
 
 Liever zonder installatie? Start dan `Rekenblad.command` (op dezelfde manier als stap 3). Rekenblad draait
 dan zolang dat Terminal-venster openstaat.
@@ -89,6 +96,7 @@ dan zolang dat Terminal-venster openstaat.
 
 ```
 app/server.py     webserver op 127.0.0.1 en de API (ook --open, --status, --stop)
+app/venster.py    eigen Mac-vensters via pywebview
 app/mac/          de Mac-app (AppleScript), installatiehulp en icoon
 app/workbook.py   openen, bewerken, ongedaan maken, opslaan
 app/refs.py       verwijzingen in formules verschuiven

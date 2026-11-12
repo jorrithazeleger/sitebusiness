@@ -87,12 +87,13 @@ function applyState(st) {
   for (const id of ['#toolbar', '#fbar', '#gridWrap', '#bottombar', '#fileBox']) $(id).hidden = !st.loaded;
   $('#btnSave').disabled = $('#btnSaveAs').disabled = $('#btnExport').disabled = !st.loaded;
   for (const id of ['#btnSave', '#btnSaveAs', '#btnExport']) $(id).hidden = !st.loaded;
-  if (!st.loaded) { renderRecent(st.recent || []); document.title = 'Rekenblad'; return; }
+  if (!st.loaded) { renderRecent(st.recent || []); document.title = 'Rekenblad'; nativeTitle(); return; }
 
   $('#fileName').textContent = st.filename;
   $('#fileName').title = st.path || 'Nog niet opgeslagen op deze Mac';
   $('#dirty').hidden = !st.dirty;
   document.title = (st.dirty ? '• ' : '') + st.filename + ' – Rekenblad';
+  nativeTitle();
   $('#tUndo').disabled = !st.undo;
   $('#tRedo').disabled = !st.redo;
   $('#btnSaveAs').hidden = !st.can_native;
@@ -161,9 +162,24 @@ function renderRecent(list) {
     return `<li><button data-i="${i}">${esc(name)}<span class="p">${esc(p)}</span></button></li>`;
   }).join('');
   $('#recentList').querySelectorAll('button').forEach((b) => {
-    b.onclick = () => run(async () => { await api('open_recent', { path: list[+b.dataset.i] }); afterOpen(); });
+    b.onclick = () => run(async () => {
+      const d = await api('open_recent', { path: list[+b.dataset.i], elsewhere: elsewhere() });
+      if (!d.elsewhere) afterOpen();
+    });
   });
 }
+
+/* Eigen Mac-venster: titel en de stip in de rode knop bijwerken. */
+function nativeApi() {
+  return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+}
+function nativeTitle() {
+  const a = nativeApi();
+  if (!a || !S.st) return;
+  const st = S.st;
+  try { a.set_title(st.loaded ? st.filename : 'Rekenblad', !!(st.loaded && st.dirty)); } catch (e) { /* venster nog niet klaar */ }
+}
+window.addEventListener('pywebviewready', nativeTitle);
 
 /* ---------------------------------------------------------------- data */
 
@@ -565,6 +581,9 @@ document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (mod && k === 's') { e.preventDefault(); if (S.editing) commitEdit(null); save(); return; }
   if (mod && k === 'o') { e.preventDefault(); openFile(); return; }
+  if (mod && nativeApi() && k === 'w') { e.preventDefault(); if (S.editing) commitEdit(null); nativeApi().close(); return; }
+  if (mod && nativeApi() && k === 'q') { e.preventDefault(); if (S.editing) commitEdit(null); nativeApi().quit(); return; }
+  if (mod && k === 'n' && S.st && S.st.window) { e.preventDefault(); newBook(); return; }
   if (!S.meta || !S.st || !S.st.loaded) return;
   if (mod && k === 'f') { e.preventDefault(); openSearch(); return; }
   if (e.key === 'Escape' && !$('#searchBar').hidden && document.activeElement.closest('#searchBar')) { closeSearch(); return; }
@@ -953,12 +972,18 @@ function afterOpen() {
   clip.focus({ preventScroll: true });
 }
 
+/* In eigen vensters opent een ander bestand in een nieuw venster (zoals Excel en Numbers). */
+function elsewhere() {
+  return !!(S.st && S.st.window && S.st.loaded);
+}
+
 function openFile() {
-  if (!confirmDiscard()) return;
+  const away = elsewhere();
+  if (!away && !confirmDiscard()) return;
   if (S.st && S.st.can_native) {
     run(async () => {
-      const d = await api('open_dialog', {});
-      if (!d.cancelled) afterOpen();
+      const d = await api('open_dialog', { elsewhere: away });
+      if (!d.cancelled && !d.elsewhere) afterOpen();
     });
   } else {
     $('#fileInput').click();
@@ -966,10 +991,11 @@ function openFile() {
 }
 
 async function upload(file) {
-  if (!confirmDiscard()) return;
+  const away = elsewhere();
+  if (!away && !confirmDiscard()) return;
   await run(async () => {
     toast('Bezig met openen…');
-    const res = await fetch('/api/upload', {
+    const res = await fetch('/api/upload' + (away ? '?elsewhere=1' : ''), {
       method: 'POST',
       headers: { 'X-Rekenblad': '1', 'X-Doc': DOC, 'X-Filename': encodeURIComponent(file.name) },
       body: file,
@@ -977,14 +1003,15 @@ async function upload(file) {
     const d = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(d.error || 'Openen mislukt.');
     applyState(d.state);
-    afterOpen();
+    if (!d.elsewhere) afterOpen();
     $('#toast').hidden = true;
   });
 }
 
 function newBook() {
-  if (!confirmDiscard()) return;
-  run(async () => { await api('new', {}); afterOpen(); });
+  const away = elsewhere();
+  if (!away && !confirmDiscard()) return;
+  run(async () => { const d = await api('new', { elsewhere: away }); if (!d.elsewhere) afterOpen(); });
 }
 
 function save() {
@@ -1005,6 +1032,13 @@ function saveAs() {
 }
 
 function download(fmt) {
+  if (S.st && S.st.can_native) {
+    run(async () => {
+      const d = await api('export', { fmt, sheet: S.sheet });
+      if (!d.cancelled) toast('Bewaard als ' + d.path);
+    });
+    return;
+  }
   const a = document.createElement('a');
   a.href = `/api/download?doc=${DOC}&fmt=${fmt}&sheet=${encodeURIComponent(S.sheet)}`;
   document.body.appendChild(a);

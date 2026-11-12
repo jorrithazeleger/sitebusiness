@@ -2,14 +2,18 @@
 
 Gebruik:
   server.py [bestand]          draait in de voorgrond (Terminal) en opent de browser
-  server.py --open [bestand…]  zorgt dat Rekenblad op de achtergrond draait en opent de bestanden
-                               (zo roept Rekenblad.app de server aan)
+  server.py --open [bestand…]  opent de bestanden in Rekenblad; start het zo nodig
+                               (op de Mac in eigen vensters, anders in de browser).
+                               Zo roept Rekenblad.app de server aan.
+  server.py --window [bestand…] start in eigen vensters (wordt door --open gebruikt)
   server.py --status           exitcode 0 als Rekenblad draait
   server.py --stop [--force]   Rekenblad stoppen; exitcode 2 als er niet-opgeslagen wijzigingen zijn
 """
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import importlib.util
 import json
 import os
 import re
@@ -34,13 +38,15 @@ from workbook import DATA_DIR, Book, UserError, recent_files  # noqa: E402
 
 STATIC = os.path.join(HERE, "static")
 STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js",
-                "/app.css": "app.css", "/favicon.svg": "favicon.svg"}
+                "/app.css": "app.css", "/favicon.svg": "favicon.svg", "/icon.png": "icon.png"}
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-        ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+        ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 IS_MAC = sys.platform == "darwin" and shutil.which("osascript") is not None
 FIRST_PORT = 8765
 PORT = 0
 SERVER = None
+GUI = None  # venster.Native als Rekenblad in eigen vensters draait
+ICON = os.path.join(HERE, "mac", "icon.png")
 MAX_UPLOAD = 300 * 1024 * 1024
 DOC_RE = re.compile(r"^[A-Za-z0-9_-]{4,40}$")
 EVICT_AFTER = 30 * 60  # niet-gewijzigde bestanden na een half uur zonder gebruik uit het geheugen halen
@@ -67,6 +73,46 @@ def get_book(doc):
             DOCS[doc] = book
         book.last_seen = time.time()
         return book
+
+
+def find_book(doc):
+    with DOCS_LOCK:
+        return DOCS.get(doc)
+
+
+def forget_doc(doc):
+    """Venster gesloten: niet-gewijzigde documenten uit het geheugen halen."""
+    with DOCS_LOCK:
+        book = DOCS.get(doc)
+        if book is not None and not book.dirty:
+            del DOCS[doc]
+
+
+def new_doc():
+    doc = secrets.token_urlsafe(9)
+    return doc, get_book(doc)
+
+
+def rescue_dirty(only=None):
+    """Vangnet: bewaar niet-opgeslagen werk als Rekenblad onverwacht stopt."""
+    folder = os.path.join(DATA_DIR, "herstel")
+    saved = []
+    with DOCS_LOCK:
+        books = [b for b in DOCS.values() if b.dirty and b.loaded]
+    if only is not None:
+        books = [only] if only.loaded else []
+    for book in books:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            ext = ".xlsm" if book.kind == "xlsm" else ".xlsx"
+            target = os.path.join(folder, "%s-%s%s" % (stamp, os.path.splitext(book.filename or "Werkboek")[0], ext))
+            with open(target, "wb") as fh:
+                fh.write(book.to_bytes("xlsx"))
+            saved.append(target)
+        except Exception:
+            traceback.print_exc()
+    return saved
 
 
 def janitor():
@@ -176,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self._raw.decode("utf-8")) if self._raw else {}
 
     def _state(self, extra=None):
-        data = {"state": self.book.state(IS_MAC)}
+        data = {"state": state_of(self.book)}
         if extra:
             data.update(extra)
         return data
@@ -261,40 +307,70 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, data, ctype, {"Content-Disposition": disp})
 
 
+def state_of(book):
+    st = book.state(IS_MAC)
+    st["window"] = GUI is not None
+    return st
+
+
 # -- API-routes per document ----------------------------------------------------
+
+def _target(h, q, body=None):
+    """In eigen vensters opent een nieuw bestand in een nieuw venster als dit venster al iets toont."""
+    want = q.get("elsewhere") == "1" or bool((body or {}).get("elsewhere"))
+    if want and GUI is not None and h.book.loaded:
+        return new_doc()
+    return None, h.book
+
+
+def _done(h, doc):
+    if doc is None:
+        return h._state()
+    GUI.open_doc(doc)
+    return h._state({"elsewhere": True})
+
 
 def r_state(h, q):
     return h._state()
 
 
 def r_new(h, q):
-    h.book.new()
-    return h._state()
+    doc, book = _target(h, q, h._jbody())
+    book.new()
+    return _done(h, doc)
 
 
 def r_upload(h, q):
     name = unquote(h.headers.get("X-Filename") or "bestand.xlsx")
-    h.book.load_bytes(h._raw, os.path.basename(name), None)
-    return h._state()
+    doc, book = _target(h, q)
+    with book.lock:
+        book.load_bytes(h._raw, os.path.basename(name), None)
+    return _done(h, doc)
 
 
 def r_open_dialog(h, q):
     if not IS_MAC:
         raise UserError("Het Mac-bestandsvenster is hier niet beschikbaar.")
+    body = h._jbody()
     path = mac_choose_open()
     if not path:
         return {"cancelled": True}
+    doc, book = _target(h, q, body)
+    with book.lock:
+        load_into(book, path, None)
     with h.book.lock:
-        load_into(h.book, path, None)
-        return h._state()
+        return _done(h, doc)
 
 
 def r_open_recent(h, q):
-    path = h._jbody().get("path")
+    body = h._jbody()
+    path = body.get("path")
     if path not in recent_files():
         raise UserError("Dit bestand staat niet (meer) in de lijst met recente bestanden.")
-    load_into(h.book, path, None)
-    return h._state()
+    doc, book = _target(h, q, body)
+    with book.lock:
+        load_into(book, path, None)
+    return _done(h, doc)
 
 
 def r_rows(h, q):
@@ -396,6 +472,35 @@ def r_save_as(h, q):
         return h._state(book.save(path, b.get("sheet")))
 
 
+def r_export(h, q):
+    """Exporteren via het Mac-bewaarvenster (in eigen vensters kan de browser niet downloaden)."""
+    b = h._jbody()
+    if not IS_MAC:
+        raise UserError("Het Mac-bestandsvenster is hier niet beschikbaar.")
+    book, fmt, sheet = h.book, b.get("fmt", "xlsx"), b.get("sheet")
+    with book.lock:
+        if not book.loaded:
+            raise UserError("Er is geen bestand geopend.")
+        base = os.path.splitext(book.filename or "Werkboek")[0]
+        if fmt == "csv":
+            name = "%s - %s.csv" % (base, sheet) if sheet else base + ".csv"
+        else:
+            name = base + (".xlsm" if book.kind == "xlsm" else ".xlsx")
+        folder = os.path.dirname(book.path) if book.path else None
+    path = mac_choose_save(name, folder)
+    if not path:
+        return {"cancelled": True}
+    with book.lock:
+        if fmt == "csv":
+            data = book._csv_bytes(sheet)
+        else:
+            book.set_active(sheet)
+            data = book.to_bytes("xlsx")
+        with open(path, "wb") as fh:
+            fh.write(data)
+    return {"path": path}
+
+
 def load_into(book, path, data):
     """Open een bestand in dit document. Bijlagen krijgen geen opslagpad."""
     name = os.path.basename(path)
@@ -426,11 +531,22 @@ def g_open_external(h, q):
             if not book.dirty:
                 load_into(book, path, h._raw)
             return {"doc": doc}
-    doc = secrets.token_urlsafe(9)
-    book = get_book(doc)
+    doc, book = new_doc()
     with book.lock:
         load_into(book, path, h._raw)
     return {"doc": doc}
+
+
+def g_show(h, q):
+    """Toon een document in een eigen venster (doc leeg = nieuw leeg venster)."""
+    if GUI is None:
+        return {"window": False}
+    doc = h._jbody().get("doc")
+    if not doc:
+        doc, _book = new_doc()
+    get_book(doc)
+    GUI.open_doc(doc)
+    return {"window": True, "doc": doc}
 
 
 def g_quit(h, q):
@@ -439,11 +555,18 @@ def g_quit(h, q):
         dirty = [b.filename for b in DOCS.values() if b.dirty]
     if dirty and not force:
         return {"dirty": dirty}
-    threading.Thread(target=SERVER.shutdown, daemon=True).start()
+    if GUI is not None:
+        def stop():
+            time.sleep(0.2)
+            rescue_dirty()
+            os._exit(0)
+        threading.Thread(target=stop, daemon=True).start()
+    else:
+        threading.Thread(target=SERVER.shutdown, daemon=True).start()
     return {"ok": True}
 
 
-NO_LOCK = {"open_dialog", "save_as"}
+NO_LOCK = {"open_dialog", "save_as", "export"}
 
 ROUTES = {
     ("GET", "state"): r_state, ("POST", "new"): r_new, ("POST", "upload"): r_upload,
@@ -454,9 +577,10 @@ ROUTES = {
     ("POST", "sheet_add"): r_sheet_add, ("POST", "sheet_rename"): r_sheet_rename,
     ("POST", "sheet_delete"): r_sheet_delete, ("POST", "undo"): r_undo, ("POST", "redo"): r_redo,
     ("GET", "search"): r_search, ("POST", "replace"): r_replace,
-    ("POST", "save"): r_save, ("POST", "save_as"): r_save_as,
+    ("POST", "save"): r_save, ("POST", "save_as"): r_save_as, ("POST", "export"): r_export,
 }
-GLOBAL_ROUTES = {("POST", "open_external"): g_open_external, ("POST", "quit"): g_quit}
+GLOBAL_ROUTES = {("POST", "open_external"): g_open_external, ("POST", "show"): g_show,
+                 ("POST", "quit"): g_quit}
 
 
 # ---------------------------------------------------------------------------
@@ -494,10 +618,17 @@ def _post(port, name, body=b"", query="", ctype="application/json"):
         return json.loads(resp.read().decode())
 
 
-def start_background():
+def gui_available():
+    if os.environ.get("REKENBLAD_BROWSER"):
+        return False
+    return sys.platform == "darwin" and importlib.util.find_spec("webview") is not None
+
+
+def start_background(gui=False, files=()):
     os.makedirs(DATA_DIR, exist_ok=True)
     log = open(os.path.join(DATA_DIR, "rekenblad.log"), "ab")
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--serve"],
+    mode = "--window" if gui else "--serve"
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), mode] + [os.path.abspath(f) for f in files],
                      stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                      start_new_session=True, close_fds=True)
     for _ in range(100):
@@ -509,10 +640,19 @@ def start_background():
 
 
 def cmd_open(files):
-    port = find_running() or start_background()
+    port = find_running()
+    if not port and gui_available():
+        for f in files:
+            if not os.access(f, os.R_OK):
+                sys.stderr.write("Kan %s niet lezen.\n" % os.path.basename(f))
+                sys.exit(1)
+        start_background(gui=True, files=files)
+        return
+    port = port or start_background()
     base = "http://127.0.0.1:%d/" % port
     if not files:
-        open_url(base)
+        if not _post(port, "show", b"{}").get("window"):
+            open_url(base)
         return
     for f in files:
         path = os.path.abspath(f)
@@ -528,7 +668,9 @@ def cmd_open(files):
             msg = json.loads(exc.read().decode() or "{}").get("error", str(exc))
             sys.stderr.write("%s: %s\n" % (os.path.basename(path), msg))
             sys.exit(1)
-        open_url(base + "?doc=" + res["doc"])
+        shown = _post(port, "show", json.dumps({"doc": res["doc"]}).encode())
+        if not shown.get("window"):
+            open_url(base + "?doc=" + res["doc"])
 
 
 def cmd_stop(force):
@@ -540,6 +682,49 @@ def cmd_stop(force):
         sys.stderr.write("Niet opgeslagen: %s\n" % ", ".join(res["dirty"]))
         return 2
     return 0
+
+
+def serve_window(port, files):
+    """Eigen vensters: de webserver draait op de achtergrond, de vensters op de hoofdthread."""
+    global PORT, SERVER, GUI
+    PORT = port
+    SERVER = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    SERVER.daemon_threads = True
+    threading.Thread(target=janitor, daemon=True).start()
+    docs = []
+    for f in files:
+        doc, book = new_doc()
+        try:
+            load_into(book, f, None)
+        except Exception as exc:
+            book.warnings = ["%s kon niet geopend worden: %s" % (os.path.basename(f), exc)]
+        docs.append(doc)
+    if not docs:
+        docs.append(new_doc()[0])
+    try:
+        import venster
+        GUI = venster.Native(PORT, find_book, forget_doc, ICON, rescue=lambda b: rescue_dirty(b))
+    except Exception:
+        traceback.print_exc()
+        GUI = None
+    threading.Thread(target=SERVER.serve_forever, daemon=True).start()
+    if GUI is None:
+        # terugval: gewoon in de browser
+        for doc in docs:
+            open_url("http://127.0.0.1:%d/?doc=%s" % (PORT, doc))
+        threading.Event().wait()
+        return
+    try:
+        GUI.run(docs)
+    except Exception:
+        traceback.print_exc()
+    saved = rescue_dirty()
+    if saved and IS_MAC:
+        subprocess.run(["osascript", "-e",
+                        'display dialog "Rekenblad is gestopt terwijl er nog niet-opgeslagen wijzigingen waren. '
+                        'Die zijn bewaard in de map herstel." buttons {"OK"} default button "OK" with title "Rekenblad"'])
+        subprocess.run(["open", os.path.dirname(saved[0])])
+    os._exit(0)
 
 
 def serve(port, open_browser, first_file=None):
@@ -582,6 +767,7 @@ def main():
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--open", action="store_true", help="op de achtergrond starten en bestanden openen")
     ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--window", action="store_true", help="in eigen vensters (macOS)")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--stop", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -600,6 +786,9 @@ def main():
     if running:
         if args.serve:
             return
+        if args.window:
+            cmd_open(args.bestanden)
+            return
         print("Rekenblad draait al, ik open het venster.")
         if args.bestanden:
             cmd_open(args.bestanden)
@@ -610,6 +799,9 @@ def main():
     if port is None:
         print("Geen vrije poort gevonden.")
         sys.exit(1)
+    if args.window:
+        serve_window(port, args.bestanden)
+        return
     serve(port, open_browser=not (args.no_browser or args.serve),
           first_file=args.bestanden[0] if args.bestanden else None)
 
