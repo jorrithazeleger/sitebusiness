@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rekenblad</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><img src="favicon.svg" alt=""><span>Rekenblad</span></div>
+  <div class="file" id="fileBox" hidden>
+    <span id="fileName"></span><span id="dirty" class="dirty" title="Niet-opgeslagen wijzigingen" hidden>niet opgeslagen</span>
+  </div>
+  <nav class="actions">
+    <button id="btnOpen" title="Openen (⌘O)">Openen</button>
+    <button id="btnNew">Nieuw</button>
+    <button id="btnSave" class="primary" title="Opslaan (⌘S)" disabled>Opslaan</button>
+    <button id="btnSaveAs" disabled>Opslaan als…</button>
+    <div class="menu-wrap">
+      <button id="btnExport" disabled>Exporteren ▾</button>
+      <div class="menu" id="exportMenu" hidden>
+        <button data-export="xlsx">Download als Excel-bestand</button>
+        <button data-export="csv">Download dit blad als .csv</button>
+      </div>
+    </div>
+  </nav>
+</header>
+
+<div class="toolbar" id="toolbar" hidden>
+  <button class="ic" id="tUndo" title="Ongedaan maken (⌘Z)"><svg viewBox="0 0 20 20"><path d="M7 5 3 9l4 4M3.5 9H12a5 5 0 0 1 0 10H9"/></svg></button>
+  <button class="ic" id="tRedo" title="Opnieuw (⇧⌘Z)"><svg viewBox="0 0 20 20"><path d="m13 5 4 4-4 4M16.5 9H8a5 5 0 0 0 0 10h3"/></svg></button>
+  <span class="sep"></span>
+  <button class="ic txt" id="tBold" title="Vet (⌘B)"><b>B</b></button>
+  <button class="ic txt" id="tItalic" title="Cursief (⌘I)"><i>I</i></button>
+  <div class="menu-wrap">
+    <button class="ic" id="tFill" title="Vulkleur"><svg viewBox="0 0 20 20"><path d="M4 10 10 4l6 6-6 6z"/><path class="sw" id="fillSwatch" d="M2 18h16"/></svg></button>
+    <div class="menu palette" id="fillMenu" hidden></div>
+  </div>
+  <div class="menu-wrap">
+    <button class="ic txt" id="tColor" title="Tekstkleur"><span class="a">A</span><span class="sw2" id="colorSwatch"></span></button>
+    <div class="menu palette" id="colorMenu" hidden></div>
+  </div>
+  <span class="sep"></span>
+  <button class="ic" data-align="left" title="Links uitlijnen"><svg viewBox="0 0 20 20"><path d="M3 5h14M3 9h9M3 13h14M3 17h9"/></svg></button>
+  <button class="ic" data-align="center" title="Centreren"><svg viewBox="0 0 20 20"><path d="M3 5h14M5.5 9h9M3 13h14M5.5 17h9"/></svg></button>
+  <button class="ic" data-align="right" title="Rechts uitlijnen"><svg viewBox="0 0 20 20"><path d="M3 5h14M8 9h9M3 13h14M8 17h9"/></svg></button>
+  <span class="sep"></span>
+  <select id="tNumfmt" title="Getalnotatie">
+    <option value="">Notatie…</option>
+    <option value="General">Standaard</option>
+    <option value="#,##0">Getal</option>
+    <option value="#,##0.00">Getal, 2 decimalen</option>
+    <option value='"€ "#,##0.00'>Euro</option>
+    <option value="0%">Procent</option>
+    <option value="0.00%">Procent, 2 decimalen</option>
+    <option value="dd-mm-yyyy">Datum</option>
+    <option value="dd-mm-yyyy hh:mm">Datum en tijd</option>
+    <option value="hh:mm">Tijd</option>
+    <option value="@">Tekst</option>
+  </select>
+  <span class="sep"></span>
+  <button class="lbl" id="tInsRow" title="Rij boven de selectie invoegen">+ Rij</button>
+  <button class="lbl" id="tDelRow" title="Geselecteerde rij(en) verwijderen">− Rij</button>
+  <button class="lbl" id="tInsCol" title="Kolom links van de selectie invoegen">+ Kolom</button>
+  <button class="lbl" id="tDelCol" title="Geselecteerde kolom(men) verwijderen">− Kolom</button>
+  <span class="grow"></span>
+  <button class="ic" id="tSearch" title="Zoeken en vervangen (⌘F)"><svg viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4.5 4.5"/></svg></button>
+</div>
+
+<div class="fbar" id="fbar" hidden>
+  <span class="ref" id="cellRef">A1</span>
+  <span class="fx">fx</span>
+  <input id="fInput" spellcheck="false" autocomplete="off" placeholder="Typ een waarde of een formule, bijvoorbeeld =SOM(A1:A5)">
+</div>
+
+<div class="searchbar" id="searchBar" hidden>
+  <input id="sQuery" placeholder="Zoeken" spellcheck="false">
+  <span class="count" id="sCount"></span>
+  <button class="ic" id="sPrev" title="Vorige"><svg viewBox="0 0 20 20"><path d="m5 12 5-5 5 5"/></svg></button>
+  <button class="ic" id="sNext" title="Volgende (Enter)"><svg viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button>
+  <label><input type="checkbox" id="sAll" checked> alle bladen</label>
+  <label><input type="checkbox" id="sCase"> hoofdlettergevoelig</label>
+  <span class="sep"></span>
+  <input id="sRepl" placeholder="Vervangen door" spellcheck="false">
+  <button class="lbl" id="sReplAll">Alles vervangen</button>
+  <span class="grow"></span>
+  <button class="ic" id="sClose" title="Sluiten (Esc)"><svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+</div>
+
+<div class="banner" id="banner" hidden><span id="bannerText"></span><button id="bannerClose" title="Sluiten">×</button></div>
+
+<main id="main">
+  <section id="welcome" class="welcome" hidden>
+    <div class="welcome-card">
+      <h1>Excel-bestanden lezen en bewerken</h1>
+      <p class="sub">Open een .xlsx-, .xlsm- of .csv-bestand, of sleep het hierheen.</p>
+      <div class="welcome-actions">
+        <button class="primary big" id="wOpen">Bestand openen</button>
+        <button class="big" id="wNew">Nieuw werkboek</button>
+      </div>
+      <p class="alt"><a href="#" id="wBrowse">of kies een bestand via de browser</a></p>
+      <div id="recentBox" hidden>
+        <h2>Recent geopend</h2>
+        <ul id="recentList"></ul>
+      </div>
+    </div>
+  </section>
+  <div id="gridWrap" class="grid-wrap" hidden>
+    <div id="gridInner" class="grid-inner">
+      <table id="grid"></table>
+      <input id="cellEditor" class="cell-editor" spellcheck="false" autocomplete="off" hidden>
+    </div>
+  </div>
+  <div id="dropHint" class="drop-hint" hidden><div>Laat los om te openen</div></div>
+</main>
+
+<footer class="bottombar" id="bottombar" hidden>
+  <div class="tabs" id="tabs"></div>
+  <button class="addtab" id="addSheet" title="Blad toevoegen">+</button>
+  <div class="status" id="status"></div>
+</footer>
+
+<div id="ctx" class="ctx" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<textarea id="clip" class="clip" aria-hidden="true" tabindex="-1"></textarea>
+<input type="file" id="fileInput" accept=".xlsx,.xlsm,.csv,.tsv" hidden>
+<script src="app.js"></script>
+</body>
+</html>
