@@ -75,8 +75,8 @@ PY
   done
 
   # Eigen icoon
-  if sips -s format icns "$HERE/app/mac/icon.png" --out "$TMP/rekenblad.icns" >/dev/null 2>&1; then
-    for name in applet droplet; do cp "$TMP/rekenblad.icns" "$APP/Contents/Resources/$name.icns"; done
+  if [ -f "$HERE/app/mac/Rekenblad.icns" ]; then
+    for name in applet droplet; do cp "$HERE/app/mac/Rekenblad.icns" "$APP/Contents/Resources/$name.icns"; done
     $PB -c "Delete :CFBundleIconName" "$PL" >/dev/null 2>&1
     rm -f "$APP/Contents/Resources/Assets.car"
     $PB -c "Delete :CFBundleIconFile" "$PL" >/dev/null 2>&1
@@ -94,6 +94,10 @@ if ! "$RB_PYTHON" "$INSTALLED/mac/bouw_app.py" "$APP" "$INSTALLED/server.py" "$I
   bouw_eenvoudige_app || { pauze; exit 1; }
 fi
 touch "$APP"
+
+# macOS onthoudt oude icoontjes; Dock opnieuw laten opstarten zodat het nieuwe icoon verschijnt.
+touch "$APP"
+killall Dock >/dev/null 2>&1
 
 echo "  Geinstalleerd in $APP"
 echo ""

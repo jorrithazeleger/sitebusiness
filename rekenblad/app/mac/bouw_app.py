@@ -142,8 +142,13 @@ def build(app, server, icon, test=False):
             return 3
 
         icon_file = None
-        if sys.platform == "darwin" and os.path.exists(icon):
-            icns = os.path.join(res, "Rekenblad.icns")
+        icns = os.path.join(res, "Rekenblad.icns")
+        ready = os.path.join(os.path.dirname(os.path.abspath(icon)), "Rekenblad.icns")
+        if os.path.exists(ready):
+            # kant-en-klaar icoonbestand met alle formaten (sips maakt van een PNG soms een leeg icoon)
+            shutil.copyfile(ready, icns)
+            icon_file = "Rekenblad"
+        elif sys.platform == "darwin" and os.path.exists(icon):
             if subprocess.run(["sips", "-s", "format", "icns", icon, "--out", icns],
                               capture_output=True).returncode == 0:
                 icon_file = "Rekenblad"
@@ -180,6 +185,7 @@ def build(app, server, icon, test=False):
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", app], capture_output=True)
         lsreg = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                  "LaunchServices.framework/Support/lsregister")
+        os.utime(app, None)  # Finder en Dock laten zien dat het icoon veranderd is
         if os.path.exists(lsreg):
             subprocess.run([lsreg, "-f", app], capture_output=True)
     print("  Echte app gebouwd (Python: %s)." % lib)
