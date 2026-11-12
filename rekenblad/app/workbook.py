@@ -54,6 +54,8 @@ def width_from_px(px):
 class Book:
     def __init__(self):
         self.lock = threading.RLock()
+        self.version = 0
+        self.attachment = False
         self._reset()
 
     # ------------------------------------------------------------------ basis
@@ -98,6 +100,7 @@ class Book:
 
     def _touch(self, ws=None):
         self.dirty = True
+        self.version += 1
         if ws is None:
             self._extent.clear()
         else:
@@ -143,6 +146,8 @@ class Book:
 
     def _install(self, wb, vals, path, filename, kind, warns):
         self._reset()
+        self.version += 1
+        self.attachment = False
         if vals is None:
             vals = openpyxl.Workbook()
             vals.remove(vals.active)
@@ -249,6 +254,7 @@ class Book:
             "filename": self.filename, "path": self.path, "kind": self.kind,
             "dirty": self.dirty, "warnings": self.warnings, "sheets": sheets,
             "active": active, "undo": len(self.undo_stack), "redo": len(self.redo_stack),
+            "version": self.version, "attachment": self.attachment,
         })
         return base
 
@@ -1081,6 +1087,7 @@ class Book:
         entry = self.undo_stack.pop()
         self.redo_stack.append(self._apply(entry, "undo"))
         self.dirty = True
+        self.version += 1
         return {}
 
     def redo(self):
@@ -1090,6 +1097,7 @@ class Book:
         entry = self.redo_stack.pop()
         self.undo_stack.append(self._apply(entry, "redo"))
         self.dirty = True
+        self.version += 1
         return {}
 
     # ------------------------------------------------------------------ zoeken
@@ -1227,6 +1235,7 @@ class Book:
             elif ext in (".xlsx", ".xlsm"):
                 self.kind = "xlsm" if ext == ".xlsm" else "xlsx"
         self.dirty = False
+        self.version += 1
         remember_recent(path)
         return {"path": path}
 

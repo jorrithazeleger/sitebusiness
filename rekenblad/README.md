@@ -6,20 +6,38 @@ Het draait helemaal op je eigen computer: er gaat niets naar internet. Het venst
 
 ## Installeren (eenmalig)
 
-1. Download deze map en zet hem ergens neer waar hij kan blijven staan, bijvoorbeeld in `Documenten`.
+1. Pak de zip uit, bijvoorbeeld in je map Downloads.
 2. Open de app **Terminal** (via Spotlight: `⌘ spatie`, typ "Terminal").
-3. Typ `bash ` (met een spatie erachter), sleep het bestand **Rekenblad.command** uit de Finder
-   in het Terminal-venster en druk op Enter.
+3. Typ `bash ` (met een spatie erachter), sleep **Installeer Rekenblad.command** uit de Finder in het
+   Terminal-venster en druk op Enter.
 
-De eerste keer installeert Rekenblad wat het nodig heeft (ongeveer een minuut). Heeft je Mac nog geen
-Python, dan verschijnt een venster van Apple om de "Command Line Tools" te installeren: klik op
-Installeer en start Rekenblad daarna opnieuw.
+Het script:
+- installeert wat Rekenblad nodig heeft (eenmalig, ongeveer een minuut). Heeft je Mac nog geen Python,
+  dan verschijnt een venster van Apple om de "Command Line Tools" te installeren. Klik op Installeer en
+  start het script daarna opnieuw;
+- zet **Rekenblad.app** bij je Programma's, met een eigen icoon;
+- vraagt of .xlsx-bestanden (en eventueel .csv) voortaan met een dubbelklik in Rekenblad openen.
 
-**Daarna:** dubbelklik gewoon op `Rekenblad.command`. Geeft macOS de melding dat het bestand niet
-gecontroleerd kan worden, ga dan naar Systeeminstellingen > Privacy en beveiliging en klik onderaan op
-"Open toch". Of start het zoals in stap 3; dat werkt altijd.
+Daarna mag je de uitgepakte map weggooien.
 
-Laat het Terminal-venster open zolang je werkt. Sluit het om Rekenblad te stoppen.
+## Gebruiken
+
+- **Dubbelklik op een Excel-bestand** in Downloads, de Finder of als bijlage in Mail: het opent in Rekenblad,
+  elk bestand in een eigen browsertabblad.
+- Wil je Rekenblad niet als standaard? Klik met de rechtermuisknop op een bestand en kies
+  **Open met > Rekenblad**. Of sleep een bestand op het Rekenblad-icoon in je Dock.
+- Rekenblad start je ook gewoon via Spotlight of Launchpad. Stoppen doe je met `⌘Q`, zoals elke app;
+  heb je nog iets niet opgeslagen, dan vraagt Rekenblad eerst of je dat zeker weet.
+- **Bijlagen uit je mail** zijn tijdelijke kopieën. Daarom vraagt Rekenblad bij Opslaan waar je het
+  bestand wilt bewaren.
+- De eerste keer dat je een bestand uit Downloads opent, vraagt macOS of Rekenblad bij die map mag.
+  Klik op Sta toe.
+
+Liever zonder installatie? Start dan `Rekenblad.command` (op dezelfde manier als stap 3). Rekenblad draait
+dan zolang dat Terminal-venster openstaat.
+
+**Verwijderen:** gooi `Rekenblad.app` uit Programma's weg en verwijder de map
+`~/Library/Application Support/Rekenblad`.
 
 ## Wat het kan
 
@@ -70,7 +88,8 @@ Laat het Terminal-venster open zolang je werkt. Sluit het om Rekenblad te stoppe
 ## Voor wie wil sleutelen
 
 ```
-app/server.py     webserver op 127.0.0.1 en de API
+app/server.py     webserver op 127.0.0.1 en de API (ook --open, --status, --stop)
+app/mac/          de Mac-app (AppleScript), installatiehulp en icoon
 app/workbook.py   openen, bewerken, ongedaan maken, opslaan
 app/refs.py       verwijzingen in formules verschuiven
 app/calc.py       formules uitrekenen

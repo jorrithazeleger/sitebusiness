@@ -29,13 +29,25 @@ const S = {
   drag: null,
 };
 
+/* Elk tabblad heeft een eigen document: zo kun je meerdere bestanden tegelijk open hebben. */
+const DOC = (() => {
+  const url = new URL(location.href);
+  let id = url.searchParams.get('doc');
+  if (!id || !/^[A-Za-z0-9_-]{4,40}$/.test(id)) {
+    id = Array.from(crypto.getRandomValues(new Uint8Array(9)), (b) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'[b % 64]).join('');
+    url.searchParams.set('doc', id);
+    history.replaceState(null, '', url);
+  }
+  return id;
+})();
+
 const gridWrap = $('#gridWrap'), grid = $('#grid'), editor = $('#cellEditor'), fInput = $('#fInput');
 const clip = $('#clip');
 
 /* ---------------------------------------------------------------- server */
 
 async function api(path, body) {
-  const opts = { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Rekenblad': '1' } };
+  const opts = { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Rekenblad': '1', 'X-Doc': DOC } };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -624,6 +636,7 @@ function rangeTexts(b) {
     const xhr = new XMLHttpRequest();
     xhr.open('GET', `/api/rows?sheet=${encodeURIComponent(S.sheet)}&start=${b.r1}&count=${Math.min(1000, b.r2 - b.r1 + 1)}`, false);
     xhr.setRequestHeader('X-Rekenblad', '1');
+    xhr.setRequestHeader('X-Doc', DOC);
     xhr.send();
     const d = JSON.parse(xhr.responseText);
     return (r, c) => { const row = d.rows[r]; const x = row && row[c]; return x ? x.d || '' : ''; };
@@ -958,7 +971,7 @@ async function upload(file) {
     toast('Bezig met openen…');
     const res = await fetch('/api/upload', {
       method: 'POST',
-      headers: { 'X-Rekenblad': '1', 'X-Filename': encodeURIComponent(file.name) },
+      headers: { 'X-Rekenblad': '1', 'X-Doc': DOC, 'X-Filename': encodeURIComponent(file.name) },
       body: file,
     });
     const d = await res.json().catch(() => ({}));
@@ -993,7 +1006,7 @@ function saveAs() {
 
 function download(fmt) {
   const a = document.createElement('a');
-  a.href = `/api/download?fmt=${fmt}&sheet=${encodeURIComponent(S.sheet)}`;
+  a.href = `/api/download?doc=${DOC}&fmt=${fmt}&sheet=${encodeURIComponent(S.sheet)}`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1035,6 +1048,19 @@ window.addEventListener('drop', (e) => {
 window.addEventListener('beforeunload', (e) => {
   if (S.st && S.st.loaded && S.st.dirty) { e.preventDefault(); e.returnValue = ''; }
 });
+
+/* Terug in dit tabblad? Dan kijken of het document intussen veranderd is
+   (bijvoorbeeld omdat je hetzelfde bestand nog eens opende vanuit de Finder). */
+async function refreshIfChanged() {
+  if (!S.st || S.editing) return;
+  const prev = S.st.version, prevFile = S.st.filename, prevLoaded = S.st.loaded;
+  await api('state');
+  if (!S.st.loaded) return;
+  if (!prevLoaded || S.st.filename !== prevFile) afterOpen();
+  else if (S.st.version !== prev) afterMutation();
+}
+window.addEventListener('focus', () => run(refreshIfChanged));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) run(refreshIfChanged); });
 
 /* ---------------------------------------------------------------- start */
 

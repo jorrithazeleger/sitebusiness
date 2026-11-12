@@ -1,15 +1,27 @@
-"""Rekenblad: start een kleine webserver op deze computer en opent de editor in de browser."""
+"""Rekenblad: een kleine webserver op deze computer met de editor in de browser.
+
+Gebruik:
+  server.py [bestand]          draait in de voorgrond (Terminal) en opent de browser
+  server.py --open [bestand…]  zorgt dat Rekenblad op de achtergrond draait en opent de bestanden
+                               (zo roept Rekenblad.app de server aan)
+  server.py --status           exitcode 0 als Rekenblad draait
+  server.py --stop [--force]   Rekenblad stoppen; exitcode 2 als er niet-opgeslagen wijzigingen zijn
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
+import secrets
 import shutil
 import socket
 import subprocess
 import sys
 import threading
+import time
 import traceback
+import urllib.error
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +30,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from workbook import Book, UserError, recent_files  # noqa: E402
+from workbook import DATA_DIR, Book, UserError, recent_files  # noqa: E402
 
 STATIC = os.path.join(HERE, "static")
 STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js",
@@ -26,9 +38,54 @@ STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 IS_MAC = sys.platform == "darwin" and shutil.which("osascript") is not None
-BOOK = Book()
+FIRST_PORT = 8765
 PORT = 0
+SERVER = None
 MAX_UPLOAD = 300 * 1024 * 1024
+DOC_RE = re.compile(r"^[A-Za-z0-9_-]{4,40}$")
+EVICT_AFTER = 30 * 60  # niet-gewijzigde bestanden na een half uur zonder gebruik uit het geheugen halen
+
+# Elk browsertabblad heeft een eigen document (?doc=...), zodat je meerdere bestanden tegelijk open hebt.
+DOCS = {}
+DOC_PATHS = {}
+DOCS_LOCK = threading.Lock()
+
+
+def get_book(doc):
+    if not doc or not DOC_RE.match(doc):
+        raise UserError("Onbekend document. Ververs de pagina.")
+    with DOCS_LOCK:
+        book = DOCS.get(doc)
+        if book is None:
+            book = Book()
+            path = DOC_PATHS.get(doc)
+            if path and os.path.exists(path):
+                try:
+                    book.load_path(path)
+                except Exception:
+                    pass
+            DOCS[doc] = book
+        book.last_seen = time.time()
+        return book
+
+
+def janitor():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with DOCS_LOCK:
+            for doc, book in list(DOCS.items()):
+                if not book.dirty and now - getattr(book, "last_seen", now) > EVICT_AFTER:
+                    if book.path:
+                        DOC_PATHS[doc] = book.path
+                    del DOCS[doc]
+
+
+def is_attachment(path):
+    """Bijlagen uit Mail of Outlook staan in een tijdelijke map; daar wil je niet naartoe opslaan."""
+    p = path.replace("\\", "/")
+    return "/Library/Containers/" in p or "/Mail Downloads/" in p or \
+        p.startswith("/private/var/folders/") or p.startswith("/var/folders/")
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +116,7 @@ def mac_choose_open():
 
 
 def mac_choose_save(default_name, default_dir):
-    if not default_dir or not os.path.isdir(default_dir):
+    if not default_dir or not os.path.isdir(default_dir) or is_attachment(default_dir + "/"):
         default_dir = os.path.expanduser("~/Documents")
         if not os.path.isdir(default_dir):
             default_dir = os.path.expanduser("~")
@@ -73,17 +130,23 @@ def mac_choose_save(default_name, default_dir):
     ], [default_name, default_dir])
 
 
+def open_url(url):
+    if sys.platform == "darwin":
+        subprocess.run(["open", url])
+    else:
+        webbrowser.open(url)
+
+
 # ---------------------------------------------------------------------------
 # HTTP
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Rekenblad/1.0"
+    server_version = "Rekenblad/1.1"
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # stil, behalve fouten
+    def log_message(self, fmt, *args):
         pass
 
-    # -- hulpfuncties
     def _send(self, status, body, ctype, extra=None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -100,8 +163,7 @@ class Handler(BaseHTTPRequestHandler):
                    "application/json; charset=utf-8")
 
     def _host_ok(self):
-        host = self.headers.get("Host", "")
-        return host in ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT)
+        return self.headers.get("Host", "") in ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT)
 
     def _read_body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -110,20 +172,15 @@ class Handler(BaseHTTPRequestHandler):
             raise UserError("Het bestand is te groot.")
         self._raw = self.rfile.read(n) if n else b""
 
-    def _body(self):
-        return self._raw
-
     def _jbody(self):
-        raw = self._body()
-        return json.loads(raw.decode("utf-8")) if raw else {}
+        return json.loads(self._raw.decode("utf-8")) if self._raw else {}
 
     def _state(self, extra=None):
-        data = {"state": BOOK.state(IS_MAC)}
+        data = {"state": self.book.state(IS_MAC)}
         if extra:
             data.update(extra)
         return data
 
-    # -- verzoeken
     def do_GET(self):
         self._dispatch("GET")
 
@@ -138,8 +195,7 @@ class Handler(BaseHTTPRequestHandler):
             except UserError as exc:
                 return self._json({"error": str(exc)}, 413)
         if not self._host_ok():
-            self._send(403, b"Forbidden", "text/plain")
-            return
+            return self._send(403, b"Forbidden", "text/plain")
         url = urlparse(self.path)
         path = url.path
         if method == "GET" and path in STATIC_FILES:
@@ -148,22 +204,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, b"Niet gevonden", "text/plain")
         name = path[5:]
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
-        if name == "download":
-            return self._guarded(lambda: self._download(q))
         if name == "ping":
             return self._json({"app": "rekenblad"})
-        # Alles wat iets wijzigt of leest vereist deze header: dat houdt andere websites buiten.
+        doc = self.headers.get("X-Doc") or q.get("doc")
+        if name == "download":
+            return self._guarded(doc, lambda: self._download(q))
+        # Alles wat iets leest of wijzigt vereist deze header: dat houdt andere websites buiten.
         if self.headers.get("X-Rekenblad") != "1":
             return self._json({"error": "Verboden"}, 403)
+        if (method, name) in GLOBAL_ROUTES:
+            return self._guarded(None, lambda: self._json(GLOBAL_ROUTES[(method, name)](self, q)), lock=False)
         handler = ROUTES.get((method, name))
         if handler is None:
             return self._json({"error": "Onbekende opdracht"}, 404)
-        self._guarded(lambda: self._json(handler(self, q)), lock=name not in NO_LOCK)
+        self._guarded(doc, lambda: self._json(handler(self, q)), lock=name not in NO_LOCK)
 
-    def _guarded(self, fn, lock=True):
+    def _guarded(self, doc, fn, lock=True):
         try:
-            if lock:
-                with BOOK.lock:
+            self.book = get_book(doc) if doc is not None or lock else None
+            if self.book is not None and lock:
+                with self.book.lock:
                     fn()
             else:
                 fn()
@@ -174,48 +234,47 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Er ging iets mis: %s" % exc}, 500)
 
     def _static(self, name):
-        path = os.path.join(STATIC, name)
         try:
-            with open(path, "rb") as fh:
+            with open(os.path.join(STATIC, name), "rb") as fh:
                 body = fh.read()
         except OSError:
             return self._send(404, b"Niet gevonden", "text/plain")
         self._send(200, body, MIME.get(os.path.splitext(name)[1], "application/octet-stream"))
 
     def _download(self, q):
+        book = self.book
         fmt = q.get("fmt", "xlsx")
         sheet = q.get("sheet")
         if fmt == "csv":
-            data = BOOK._csv_bytes(sheet)
-            base = os.path.splitext(BOOK.filename or "export")[0]
+            data = book._csv_bytes(sheet)
+            base = os.path.splitext(book.filename or "export")[0]
             fname = "%s - %s.csv" % (base, sheet) if sheet else base + ".csv"
             ctype = "text/csv; charset=utf-8"
         else:
-            BOOK.set_active(sheet)
-            data = BOOK.to_bytes("xlsx")
-            base = os.path.splitext(BOOK.filename or "werkboek")[0]
-            ext = ".xlsm" if BOOK.kind == "xlsm" else ".xlsx"
-            fname = base + ext
+            book.set_active(sheet)
+            data = book.to_bytes("xlsx")
+            base = os.path.splitext(book.filename or "werkboek")[0]
+            fname = base + (".xlsm" if book.kind == "xlsm" else ".xlsx")
             ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         disp = "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (
             fname.encode("ascii", "replace").decode().replace('"', ""), quote(fname))
         self._send(200, data, ctype, {"Content-Disposition": disp})
 
 
-# -- API-routes ---------------------------------------------------------------
+# -- API-routes per document ----------------------------------------------------
 
 def r_state(h, q):
-    return {"state": BOOK.state(IS_MAC)}
+    return h._state()
 
 
 def r_new(h, q):
-    BOOK.new()
+    h.book.new()
     return h._state()
 
 
 def r_upload(h, q):
     name = unquote(h.headers.get("X-Filename") or "bestand.xlsx")
-    BOOK.load_bytes(h._body(), os.path.basename(name), None)
+    h.book.load_bytes(h._raw, os.path.basename(name), None)
     return h._state()
 
 
@@ -225,8 +284,8 @@ def r_open_dialog(h, q):
     path = mac_choose_open()
     if not path:
         return {"cancelled": True}
-    with BOOK.lock:
-        BOOK.load_path(path)
+    with h.book.lock:
+        load_into(h.book, path, None)
         return h._state()
 
 
@@ -234,151 +293,188 @@ def r_open_recent(h, q):
     path = h._jbody().get("path")
     if path not in recent_files():
         raise UserError("Dit bestand staat niet (meer) in de lijst met recente bestanden.")
-    BOOK.load_path(path)
+    load_into(h.book, path, None)
     return h._state()
 
 
 def r_rows(h, q):
-    return BOOK.get_rows(q.get("sheet", ""), int(q.get("start", 1)), int(q.get("count", 100)))
+    return h.book.get_rows(q.get("sheet", ""), int(q.get("start", 1)), int(q.get("count", 100)))
 
 
 def r_set(h, q):
     b = h._jbody()
-    res = BOOK.set_cells(b["sheet"], b.get("cells", []))
-    return h._state(res)
+    return h._state(h.book.set_cells(b["sheet"], b.get("cells", [])))
 
 
 def r_clear(h, q):
     b = h._jbody()
-    res = BOOK.clear_range(b["sheet"], b["r1"], b["c1"], b["r2"], b["c2"])
-    return h._state(res)
+    return h._state(h.book.clear_range(b["sheet"], b["r1"], b["c1"], b["r2"], b["c2"]))
 
 
 def r_format(h, q):
     b = h._jbody()
-    res = BOOK.set_format(b["sheet"], b["r1"], b["c1"], b["r2"], b["c2"], b.get("props", {}))
-    return h._state(res)
+    return h._state(h.book.set_format(b["sheet"], b["r1"], b["c1"], b["r2"], b["c2"], b.get("props", {})))
 
 
 def r_colwidth(h, q):
     b = h._jbody()
-    BOOK.set_col_width(b["sheet"], b["c"], b["px"])
+    h.book.set_col_width(b["sheet"], b["c"], b["px"])
     return h._state()
 
 
 def r_insert(h, q):
     b = h._jbody()
-    BOOK.insert(b["sheet"], b["axis"], b["at"], b.get("count", 1))
+    h.book.insert(b["sheet"], b["axis"], b["at"], b.get("count", 1))
     return h._state()
 
 
 def r_delete(h, q):
     b = h._jbody()
-    BOOK.delete(b["sheet"], b["axis"], b["at"], b.get("count", 1))
+    h.book.delete(b["sheet"], b["axis"], b["at"], b.get("count", 1))
     return h._state()
 
 
 def r_sheet_add(h, q):
-    res = BOOK.add_sheet(h._jbody().get("name"))
-    return h._state(res)
+    return h._state(h.book.add_sheet(h._jbody().get("name")))
 
 
 def r_sheet_rename(h, q):
     b = h._jbody()
-    res = BOOK.rename_sheet(b["old"], b["new"])
-    return h._state(res)
+    return h._state(h.book.rename_sheet(b["old"], b["new"]))
 
 
 def r_sheet_delete(h, q):
-    BOOK.delete_sheet(h._jbody()["name"])
+    h.book.delete_sheet(h._jbody()["name"])
     return h._state()
 
 
 def r_undo(h, q):
-    BOOK.undo()
+    h.book.undo()
     return h._state()
 
 
 def r_redo(h, q):
-    BOOK.redo()
+    h.book.redo()
     return h._state()
 
 
 def r_search(h, q):
-    return BOOK.search(q.get("q", ""), q.get("sheet") or None, q.get("case") == "1")
+    return h.book.search(q.get("q", ""), q.get("sheet") or None, q.get("case") == "1")
 
 
 def r_replace(h, q):
     b = h._jbody()
-    res = BOOK.replace_all(b.get("q", ""), b.get("repl", ""), b.get("sheet") or None,
-                           bool(b.get("case")))
-    return h._state(res)
+    return h._state(h.book.replace_all(b.get("q", ""), b.get("repl", ""), b.get("sheet") or None,
+                                       bool(b.get("case"))))
 
 
 def r_save(h, q):
     b = h._jbody()
-    if not BOOK.path:
+    if not h.book.path:
         return {"need_path": True}
-    res = BOOK.save(None, b.get("sheet"))
-    return h._state(res)
+    return h._state(h.book.save(None, b.get("sheet")))
 
 
 def r_save_as(h, q):
     b = h._jbody()
     if not IS_MAC:
         raise UserError("Het Mac-bestandsvenster is hier niet beschikbaar.")
-    with BOOK.lock:
-        if not BOOK.loaded:
+    book = h.book
+    with book.lock:
+        if not book.loaded:
             raise UserError("Er is geen bestand geopend.")
-        base = os.path.splitext(BOOK.filename or "Werkboek")[0]
-        ext = ".xlsm" if BOOK.kind == "xlsm" else ".xlsx"
-        folder = os.path.dirname(BOOK.path) if BOOK.path else None
+        base = os.path.splitext(book.filename or "Werkboek")[0]
+        ext = ".xlsm" if book.kind == "xlsm" else ".xlsx"
+        folder = os.path.dirname(book.path) if book.path else None
     path = mac_choose_save(base + ext, folder)
     if not path:
         return {"cancelled": True}
     if not os.path.splitext(path)[1]:
         path += ext
-    with BOOK.lock:
-        res = BOOK.save(path, b.get("sheet"))
-        return h._state(res)
+    with book.lock:
+        book.attachment = False
+        return h._state(book.save(path, b.get("sheet")))
+
+
+def load_into(book, path, data):
+    """Open een bestand in dit document. Bijlagen krijgen geen opslagpad."""
+    name = os.path.basename(path)
+    if data is None:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    if is_attachment(path):
+        book.load_bytes(data, name, None)
+        book.attachment = True
+        book.warnings = ["Dit is een bijlage (uit je mail). Kies bij Opslaan waar je het bestand wilt bewaren."] \
+            + book.warnings
+    else:
+        book.load_bytes(data, name, path)
+        book.attachment = False
+        from workbook import remember_recent
+        remember_recent(path)
+
+
+# -- algemene routes ---------------------------------------------------------------
+
+def g_open_external(h, q):
+    """Rekenblad.app stuurt een bestand dat je in de Finder of Mail opende."""
+    path = q.get("path") or ""
+    with DOCS_LOCK:
+        existing = [(d, b) for d, b in DOCS.items() if path and b.path == path]
+    for doc, book in existing:
+        with book.lock:
+            if not book.dirty:
+                load_into(book, path, h._raw)
+            return {"doc": doc}
+    doc = secrets.token_urlsafe(9)
+    book = get_book(doc)
+    with book.lock:
+        load_into(book, path, h._raw)
+    return {"doc": doc}
+
+
+def g_quit(h, q):
+    force = bool(h._jbody().get("force"))
+    with DOCS_LOCK:
+        dirty = [b.filename for b in DOCS.values() if b.dirty]
+    if dirty and not force:
+        return {"dirty": dirty}
+    threading.Thread(target=SERVER.shutdown, daemon=True).start()
+    return {"ok": True}
 
 
 NO_LOCK = {"open_dialog", "save_as"}
 
 ROUTES = {
-    ("GET", "state"): r_state,
-    ("POST", "new"): r_new,
-    ("POST", "upload"): r_upload,
-    ("POST", "open_dialog"): r_open_dialog,
-    ("POST", "open_recent"): r_open_recent,
-    ("GET", "rows"): r_rows,
-    ("POST", "set"): r_set,
-    ("POST", "clear"): r_clear,
-    ("POST", "format"): r_format,
-    ("POST", "colwidth"): r_colwidth,
-    ("POST", "insert"): r_insert,
-    ("POST", "delete"): r_delete,
-    ("POST", "sheet_add"): r_sheet_add,
-    ("POST", "sheet_rename"): r_sheet_rename,
-    ("POST", "sheet_delete"): r_sheet_delete,
-    ("POST", "undo"): r_undo,
-    ("POST", "redo"): r_redo,
-    ("GET", "search"): r_search,
-    ("POST", "replace"): r_replace,
-    ("POST", "save"): r_save,
-    ("POST", "save_as"): r_save_as,
+    ("GET", "state"): r_state, ("POST", "new"): r_new, ("POST", "upload"): r_upload,
+    ("POST", "open_dialog"): r_open_dialog, ("POST", "open_recent"): r_open_recent,
+    ("GET", "rows"): r_rows, ("POST", "set"): r_set, ("POST", "clear"): r_clear,
+    ("POST", "format"): r_format, ("POST", "colwidth"): r_colwidth,
+    ("POST", "insert"): r_insert, ("POST", "delete"): r_delete,
+    ("POST", "sheet_add"): r_sheet_add, ("POST", "sheet_rename"): r_sheet_rename,
+    ("POST", "sheet_delete"): r_sheet_delete, ("POST", "undo"): r_undo, ("POST", "redo"): r_redo,
+    ("GET", "search"): r_search, ("POST", "replace"): r_replace,
+    ("POST", "save"): r_save, ("POST", "save_as"): r_save_as,
 }
+GLOBAL_ROUTES = {("POST", "open_external"): g_open_external, ("POST", "quit"): g_quit}
 
 
 # ---------------------------------------------------------------------------
-# Starten
+# Starten, openen, stoppen
 
-def _running_instance(port):
+def _ping(port):
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/api/ping" % port, timeout=0.5) as resp:
             return json.loads(resp.read().decode()).get("app") == "rekenblad"
     except Exception:
         return False
+
+
+def find_running():
+    for port in range(FIRST_PORT, FIRST_PORT + 20):
+        if _ping(port):
+            return port
+    return None
 
 
 def _free(port):
@@ -390,52 +486,132 @@ def _free(port):
             return False
 
 
-def main():
-    global PORT
-    # ruimte voor lange rekenketens (bijvoorbeeld een lopend totaal over duizenden rijen)
-    threading.stack_size(64 * 1024 * 1024)
-    sys.setrecursionlimit(20000)
-    ap = argparse.ArgumentParser(description="Rekenblad: Excel-bestanden lezen en bewerken")
-    ap.add_argument("bestand", nargs="?", help="optioneel: bestand om meteen te openen")
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--no-browser", action="store_true", help="open de browser niet automatisch")
-    args = ap.parse_args()
+def _post(port, name, body=b"", query="", ctype="application/json"):
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/api/%s%s" % (port, name, query), data=body, method="POST",
+        headers={"X-Rekenblad": "1", "Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return json.loads(resp.read().decode())
 
-    for port in range(args.port, args.port + 20):
-        if _running_instance(port):
-            url = "http://127.0.0.1:%d/" % port
-            print("Rekenblad draait al op %s, ik open dat venster." % url)
-            if not args.no_browser:
-                webbrowser.open(url)
-            return
-        if _free(port):
-            PORT = port
-            break
-    else:
-        print("Geen vrije poort gevonden.")
-        sys.exit(1)
 
-    if args.bestand:
+def start_background():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    log = open(os.path.join(DATA_DIR, "rekenblad.log"), "ab")
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--serve"],
+                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                     start_new_session=True, close_fds=True)
+    for _ in range(100):
+        time.sleep(0.1)
+        port = find_running()
+        if port:
+            return port
+    raise SystemExit("Rekenblad kon niet gestart worden. Zie %s" % os.path.join(DATA_DIR, "rekenblad.log"))
+
+
+def cmd_open(files):
+    port = find_running() or start_background()
+    base = "http://127.0.0.1:%d/" % port
+    if not files:
+        open_url(base)
+        return
+    for f in files:
+        path = os.path.abspath(f)
         try:
-            BOOK.load_path(os.path.abspath(args.bestand))
-        except Exception as exc:
-            print("Kon %s niet openen: %s" % (args.bestand, exc))
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            sys.stderr.write("Kan %s niet lezen: %s\n" % (os.path.basename(path), exc.strerror))
+            sys.exit(1)
+        try:
+            res = _post(port, "open_external", data, "?path=" + quote(path), "application/octet-stream")
+        except urllib.error.HTTPError as exc:
+            msg = json.loads(exc.read().decode() or "{}").get("error", str(exc))
+            sys.stderr.write("%s: %s\n" % (os.path.basename(path), msg))
+            sys.exit(1)
+        open_url(base + "?doc=" + res["doc"])
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    server.daemon_threads = True
+
+def cmd_stop(force):
+    port = find_running()
+    if not port:
+        return 0
+    res = _post(port, "quit", json.dumps({"force": force}).encode())
+    if res.get("dirty"):
+        sys.stderr.write("Niet opgeslagen: %s\n" % ", ".join(res["dirty"]))
+        return 2
+    return 0
+
+
+def serve(port, open_browser, first_file=None):
+    global PORT, SERVER
+    PORT = port
+    SERVER = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    SERVER.daemon_threads = True
+    threading.Thread(target=janitor, daemon=True).start()
     url = "http://127.0.0.1:%d/" % PORT
     print("")
     print("  Rekenblad draait op %s" % url)
     print("  Laat dit venster open zolang je werkt. Sluit het (of druk Ctrl+C) om te stoppen.")
-    print("")
-    if not args.no_browser:
-        threading.Timer(0.5, webbrowser.open, [url]).start()
+    print("", flush=True)
+    if first_file:
+        doc = secrets.token_urlsafe(9)
+        try:
+            load_into(get_book(doc), os.path.abspath(first_file), None)
+            url += "?doc=" + doc
+        except Exception as exc:
+            print("Kon %s niet openen: %s" % (first_file, exc))
+    if open_browser:
+        threading.Timer(0.4, open_url, [url]).start()
     try:
-        server.serve_forever()
+        SERVER.serve_forever()
     except KeyboardInterrupt:
-        print("\nRekenblad is gestopt.")
+        pass
     finally:
-        server.server_close()
+        SERVER.server_close()
+        print("\nRekenblad is gestopt.")
+
+
+def main():
+    global FIRST_PORT
+    # ruimte voor lange rekenketens (bijvoorbeeld een lopend totaal over duizenden rijen)
+    threading.stack_size(64 * 1024 * 1024)
+    sys.setrecursionlimit(20000)
+    ap = argparse.ArgumentParser(description="Rekenblad: Excel-bestanden lezen en bewerken")
+    ap.add_argument("bestanden", nargs="*")
+    ap.add_argument("--port", type=int, default=FIRST_PORT)
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--open", action="store_true", help="op de achtergrond starten en bestanden openen")
+    ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--status", action="store_true")
+    ap.add_argument("--stop", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+    FIRST_PORT = args.port
+
+    if args.status:
+        sys.exit(0 if find_running() else 1)
+    if args.stop:
+        sys.exit(cmd_stop(args.force))
+    if args.open:
+        cmd_open(args.bestanden)
+        return
+
+    running = find_running()
+    if running:
+        if args.serve:
+            return
+        print("Rekenblad draait al, ik open het venster.")
+        if args.bestanden:
+            cmd_open(args.bestanden)
+        elif not args.no_browser:
+            open_url("http://127.0.0.1:%d/" % running)
+        return
+    port = next((p for p in range(FIRST_PORT, FIRST_PORT + 20) if _free(p)), None)
+    if port is None:
+        print("Geen vrije poort gevonden.")
+        sys.exit(1)
+    serve(port, open_browser=not (args.no_browser or args.serve),
+          first_file=args.bestanden[0] if args.bestanden else None)
 
 
 if __name__ == "__main__":
