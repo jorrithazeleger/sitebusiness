@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schrijfblad</title>
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="stylesheet" href="app.css">
+<style id="docCss"></style>
+<style id="numCss"></style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><img src="icon.png" alt=""><span>Schrijfblad</span></div>
+  <div class="file" id="fileBox" hidden>
+    <span id="fileName"></span><span id="dirty" class="dirty" title="Niet-opgeslagen wijzigingen" hidden>niet opgeslagen</span>
+  </div>
+  <nav class="actions">
+    <button id="btnOpen" title="Openen (⌘O)">Openen</button>
+    <button id="btnNew">Nieuw</button>
+    <button id="btnSave" class="primary" title="Opslaan (⌘S)" hidden>Opslaan</button>
+    <button id="btnSaveAs" hidden>Opslaan als…</button>
+    <div class="menu-wrap">
+      <button id="btnExport" hidden>Exporteren ▾</button>
+      <div class="menu" id="exportMenu" hidden>
+        <button data-export="docx">Word-document (.docx)</button>
+        <button data-export="md">Markdown (.md)</button>
+        <button data-export="txt">Platte tekst (.txt)</button>
+        <hr>
+        <button id="btnPrint">Afdrukken of bewaren als PDF… <span class="kbd">⌘P</span></button>
+      </div>
+    </div>
+  </nav>
+</header>
+
+<div class="toolbar" id="toolbar" hidden>
+  <button class="ic" id="tUndo" title="Ongedaan maken (⌘Z)"><svg viewBox="0 0 20 20"><path d="M7 5 3 9l4 4M3.5 9H12a5 5 0 0 1 0 10H9"/></svg></button>
+  <button class="ic" id="tRedo" title="Opnieuw (⇧⌘Z)"><svg viewBox="0 0 20 20"><path d="m13 5 4 4-4 4M16.5 9H8a5 5 0 0 0 0 10h3"/></svg></button>
+  <span class="sep"></span>
+  <select id="tStyle" title="Opmaakprofiel (⌥⌘1, ⌥⌘2, ⌥⌘3 voor koppen, ⌥⌘0 voor standaard)"></select>
+  <select id="tSize" title="Tekengrootte">
+    <option value="">Grootte</option>
+    <option>8</option><option>9</option><option>10</option><option>10.5</option><option>11</option><option>12</option>
+    <option>14</option><option>16</option><option>18</option><option>20</option><option>24</option><option>28</option>
+    <option>32</option><option>36</option><option>48</option><option>72</option>
+  </select>
+  <span class="sep"></span>
+  <button class="ic txt" id="tBold" data-cmd="bold" title="Vet (⌘B)"><b>B</b></button>
+  <button class="ic txt" id="tItalic" data-cmd="italic" title="Cursief (⌘I)"><i>I</i></button>
+  <button class="ic txt" id="tUnder" data-cmd="underline" title="Onderstrepen (⌘U)"><u>U</u></button>
+  <button class="ic txt" id="tStrike" data-cmd="strikeThrough" title="Doorhalen"><s>S</s></button>
+  <button class="ic txt sm" id="tSup" data-cmd="superscript" title="Superscript">x²</button>
+  <button class="ic txt sm" id="tSub" data-cmd="subscript" title="Subscript">x₂</button>
+  <div class="menu-wrap">
+    <button class="ic txt" id="tColor" title="Tekstkleur"><span class="a">A</span><span class="sw2" id="colorSwatch"></span></button>
+    <div class="menu palette" id="colorMenu" hidden></div>
+  </div>
+  <div class="menu-wrap">
+    <button class="ic" id="tMark" title="Markeren"><svg viewBox="0 0 20 20"><path d="m6 13 7-7 3 3-7 7H6z"/><path class="sw" d="M2 18h16"/></svg></button>
+    <div class="menu palette" id="markMenu" hidden></div>
+  </div>
+  <button class="ic" id="tClear" title="Opmaak wissen"><svg viewBox="0 0 20 20"><path d="M5 5h10M10 5 7.5 16M12 12l5 5M17 12l-5 5"/></svg></button>
+  <span class="sep"></span>
+  <button class="ic" data-align="left" title="Links uitlijnen"><svg viewBox="0 0 20 20"><path d="M3 5h14M3 9h9M3 13h14M3 17h9"/></svg></button>
+  <button class="ic" data-align="center" title="Centreren"><svg viewBox="0 0 20 20"><path d="M3 5h14M5.5 9h9M3 13h14M5.5 17h9"/></svg></button>
+  <button class="ic" data-align="right" title="Rechts uitlijnen"><svg viewBox="0 0 20 20"><path d="M3 5h14M8 9h9M3 13h14M8 17h9"/></svg></button>
+  <button class="ic" data-align="both" title="Uitvullen"><svg viewBox="0 0 20 20"><path d="M3 5h14M3 9h14M3 13h14M3 17h14"/></svg></button>
+  <span class="sep"></span>
+  <button class="ic" id="tBullet" title="Opsomming"><svg viewBox="0 0 20 20"><circle cx="4" cy="6" r="1.2"/><circle cx="4" cy="14" r="1.2"/><path d="M8 6h9M8 14h9"/></svg></button>
+  <button class="ic" id="tNumber" title="Nummering"><svg viewBox="0 0 20 20"><path d="M3 4h1.5v4M3 8h3M3 12.5c0-1 2.6-1 2.6.3 0 1-2.6 1.6-2.6 3.2h2.8M9 6h8M9 14h8"/></svg></button>
+  <button class="ic" id="tOutdent" title="Inspringing verkleinen (⇧Tab in een lijst)"><svg viewBox="0 0 20 20"><path d="M3 4h14M9 8h8M9 12h8M3 16h14M6 8l-3 2 3 2"/></svg></button>
+  <button class="ic" id="tIndent" title="Inspringing vergroten (Tab in een lijst)"><svg viewBox="0 0 20 20"><path d="M3 4h14M9 8h8M9 12h8M3 16h14M3 8l3 2-3 2"/></svg></button>
+  <span class="sep"></span>
+  <button class="ic" id="tLink" title="Link (⌘K)"><svg viewBox="0 0 20 20"><path d="M8.5 11.5a3.5 3.5 0 0 0 5 0l2.5-2.5a3.5 3.5 0 0 0-5-5l-1 1M11.5 8.5a3.5 3.5 0 0 0-5 0L4 11a3.5 3.5 0 0 0 5 5l1-1"/></svg></button>
+  <button class="ic" id="tImage" title="Afbeelding invoegen"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7.5" cy="8.5" r="1.5"/><path d="m3.5 15 4.5-4.5 3 3 2-2 3.5 3.5"/></svg></button>
+  <div class="menu-wrap">
+    <button class="ic" id="tTable" title="Tabel"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8h14M3 12h14M8 4v12M12.5 4v12"/></svg></button>
+    <div class="menu" id="tableMenu" hidden>
+      <div class="grid-pick" id="gridPick"></div>
+      <div class="grid-label" id="gridLabel">Tabel invoegen</div>
+      <hr>
+      <button data-top="row_above">Rij erboven invoegen</button>
+      <button data-top="row_below">Rij eronder invoegen</button>
+      <button data-top="col_left">Kolom links invoegen</button>
+      <button data-top="col_right">Kolom rechts invoegen</button>
+      <hr>
+      <button data-top="row_delete">Rij verwijderen</button>
+      <button data-top="col_delete">Kolom verwijderen</button>
+      <button data-top="table_delete" class="danger">Tabel verwijderen</button>
+    </div>
+  </div>
+  <button class="ic" id="tBreak" title="Pagina-einde invoegen (⌘Enter)"><svg viewBox="0 0 20 20"><path d="M5 3v4h10V3M5 17v-4h10v4M2 10h2M7 10h2M11 10h2M16 10h2"/></svg></button>
+  <span class="grow"></span>
+  <button class="ic" id="tSearch" title="Zoeken en vervangen (⌘F)"><svg viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4.5 4.5"/></svg></button>
+</div>
+
+<div class="searchbar" id="searchBar" hidden>
+  <input id="sQuery" placeholder="Zoeken" spellcheck="false">
+  <span class="count" id="sCount"></span>
+  <button class="ic" id="sPrev" title="Vorige (⇧Enter)"><svg viewBox="0 0 20 20"><path d="m5 12 5-5 5 5"/></svg></button>
+  <button class="ic" id="sNext" title="Volgende (Enter)"><svg viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button>
+  <label><input type="checkbox" id="sCase"> hoofdlettergevoelig</label>
+  <span class="sep"></span>
+  <input id="sRepl" placeholder="Vervangen door" spellcheck="false">
+  <button class="lbl" id="sReplOne">Vervang</button>
+  <button class="lbl" id="sReplAll">Alles vervangen</button>
+  <span class="grow"></span>
+  <button class="ic" id="sClose" title="Sluiten (Esc)"><svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+</div>
+
+<div class="banner" id="banner" hidden><span id="bannerText"></span><button id="bannerClose" title="Sluiten">×</button></div>
+<div class="banner tracked" id="trackedBar" hidden>
+  <span>Dit document bevat <b>bijgehouden wijzigingen</b> (groen = toegevoegd, rood = verwijderd). Die alinea's kun je pas bewerken als je de wijzigingen verwerkt.</span>
+  <button id="trAccept">Alles accepteren</button>
+  <button id="trReject">Alles afwijzen</button>
+</div>
+
+<main id="main">
+  <section id="welcome" class="welcome" hidden>
+    <div class="welcome-card">
+      <h1>Word-documenten lezen en bewerken</h1>
+      <p class="sub">Open een .docx-bestand of sleep het hierheen. Ook .doc, .rtf, .odt en .txt worden omgezet.</p>
+      <div class="welcome-actions">
+        <button class="primary big" id="wOpen">Bestand openen</button>
+        <button class="big" id="wNew">Nieuw document</button>
+      </div>
+      <p class="alt"><a href="#" id="wBrowse">of kies een bestand via de browser</a></p>
+      <div id="recentBox" hidden>
+        <h2>Recent geopend</h2>
+        <ul id="recentList"></ul>
+      </div>
+    </div>
+  </section>
+  <div id="scroller" class="scroller" hidden>
+    <div id="doc" class="doc"></div>
+  </div>
+  <div id="dropHint" class="drop-hint" hidden><div id="dropText">Laat los om te openen</div></div>
+</main>
+
+<footer class="bottombar" id="bottombar" hidden>
+  <div class="status" id="status"></div>
+  <span class="grow"></span>
+  <span class="saving" id="saving"></span>
+  <select id="zoom" title="Zoomen">
+    <option value="0.75">75%</option><option value="0.9">90%</option><option value="1" selected>100%</option>
+    <option value="1.1">110%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option>
+  </select>
+</footer>
+
+<div id="ctx" class="ctx" hidden></div>
+<div id="dialog" class="dialog-back" hidden>
+  <form class="dialog" id="dialogForm">
+    <h3 id="dialogTitle"></h3>
+    <div id="dialogFields"></div>
+    <div class="dialog-actions">
+      <button type="button" id="dialogExtra" hidden></button>
+      <span class="grow"></span>
+      <button type="button" id="dialogCancel">Annuleer</button>
+      <button type="submit" class="primary" id="dialogOk">OK</button>
+    </div>
+  </form>
+</div>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="fileInput" accept=".docx,.docm,.dotx,.doc,.rtf,.odt,.txt" hidden>
+<input type="file" id="imageInput" accept="image/png,image/jpeg,image/gif,image/bmp,image/tiff" hidden>
+<script src="app.js"></script>
+</body>
+</html>
