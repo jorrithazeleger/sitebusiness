@@ -8,6 +8,7 @@ zulke dubbele zinnen haalt Notulist weg.
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import os
 import re
@@ -22,6 +23,9 @@ log = logging.getLogger("notulist")
 
 RATE = 16000
 TRANSCRIPT = "transcript.md"
+TRANSCRIPT_JSON = "transcript.json"
+AFSPEEL_M4A = "opname.m4a"
+AFSPEEL_WAV = "opname.wav"
 
 DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
 MAANDEN = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus",
@@ -278,20 +282,82 @@ def verwerk(map_: str, transcriber: Transcriber, instellingen: dict, voortgang=N
 
     segmenten = voeg_samen(ik, anderen, instellingen.get("naam_ik", "Ik"),
                            instellingen.get("naam_anderen", "Anderen"), verschuiving)
-    tekst = markdown(meta, segmenten, transcriber.model_naam,
-                     " en ".join(sporen) if sporen else "geen geluid")
+    sporen_tekst = " en ".join(sporen) if sporen else "geen geluid"
+    tekst = markdown(meta, segmenten, transcriber.model_naam, sporen_tekst)
     uit = os.path.join(map_, TRANSCRIPT)
-    with open(uit + ".tmp", "w", encoding="utf-8") as fh:
-        fh.write(tekst)
-    os.replace(uit + ".tmp", uit)
+    schrijf_bestand(uit, tekst)
+    schrijf_bestand(os.path.join(map_, TRANSCRIPT_JSON), json.dumps({
+        "model": transcriber.model_naam,
+        "sporen": sporen_tekst,
+        "segmenten": [{"start": round(s.start, 2), "einde": round(s.einde, 2),
+                       "spreker": s.spreker, "tekst": s.tekst} for s in segmenten],
+    }, ensure_ascii=False, indent=1))
 
-    if not instellingen.get("audio_bewaren", True):
-        for pad in (mic_pad, sys_pad):
+    if instellingen.get("audio_bewaren", True):
+        try:
+            maak_afspeelbestand(map_, verschuiving)
+        except Exception:  # noqa: BLE001 - zonder afspeelbestand werkt de rest gewoon
+            log.exception("afspeelbestand maken")
+    else:
+        for pad in (mic_pad, sys_pad, os.path.join(map_, AFSPEEL_M4A), os.path.join(map_, AFSPEEL_WAV)):
             if os.path.exists(pad):
                 os.remove(pad)
     meta["status"] = "klaar"
     schrijf_meta(map_, meta)
     return uit
+
+
+def schrijf_bestand(pad: str, tekst: str) -> None:
+    with open(pad + ".tmp", "w", encoding="utf-8") as fh:
+        fh.write(tekst)
+    os.replace(pad + ".tmp", pad)
+
+
+def maak_afspeelbestand(map_: str, verschuiving: float = 0.0):
+    """Mengt beide sporen tot één bestand om terug te luisteren in het venster.
+    Op de Mac wordt dat een klein m4a-bestand (afconvert zit in macOS), anders een WAV."""
+    import shutil
+    import subprocess
+    import numpy as np
+    sporen = []
+    for naam, schuif in ((MIC, 0.0), (SYSTEEM, verschuiving)):
+        pad = os.path.join(map_, naam)
+        if not os.path.exists(pad) or os.path.getsize(pad) <= 44:
+            continue
+        try:
+            audio = laad_audio(pad)
+        except (OSError, EOFError, ValueError, wave.Error):
+            continue
+        begin = int(round(max(0.0, schuif) * RATE))
+        if schuif < 0:
+            audio = audio[int(round(-schuif * RATE)):]
+        sporen.append((begin, audio))
+    if not sporen:
+        return None
+    lengte = max(b + len(a) for b, a in sporen)
+    mix = np.zeros(lengte, dtype=np.float32)
+    for begin, audio in sporen:
+        mix[begin:begin + len(audio)] += audio
+    piek = float(np.max(np.abs(mix))) if len(mix) else 0.0
+    if piek > 0:
+        mix *= min(1.0, 0.9 / piek) if piek > 0.9 else 1.0
+    wav_pad = os.path.join(map_, AFSPEEL_WAV)
+    with wave.open(wav_pad + ".tmp", "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes((np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes())
+    os.replace(wav_pad + ".tmp", wav_pad)
+    afconvert = shutil.which("afconvert")
+    if afconvert:
+        m4a = os.path.join(map_, AFSPEEL_M4A)
+        r = subprocess.run([afconvert, "-f", "m4af", "-d", "aac", "-b", "48000", wav_pad, m4a + ".tmp.m4a"],
+                           capture_output=True)
+        if r.returncode == 0:
+            os.replace(m4a + ".tmp.m4a", m4a)
+            os.remove(wav_pad)
+            return m4a
+    return wav_pad
 
 
 def wachtende_mappen(basis: str):

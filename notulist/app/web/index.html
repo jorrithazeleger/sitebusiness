@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Notulist</title>
+  <link rel="stylesheet" href="/web/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="zijbalk">
+      <div class="opname-blok" id="opnameBlok"></div>
+      <label class="zoek">
+        <span class="zoek-icoon" aria-hidden="true"></span>
+        <input id="zoek" type="search" placeholder="Zoek in je meetings" autocomplete="off" spellcheck="false">
+      </label>
+      <nav class="lijst" id="lijst" aria-label="Meetings"></nav>
+      <footer class="voet">
+        <div class="voet-status" id="voetStatus"></div>
+        <button class="knop-icoon" id="knopInstellingen" title="Instellingen" aria-label="Instellingen"></button>
+      </footer>
+    </aside>
+    <main class="inhoud" id="inhoud"></main>
+  </div>
+  <div class="melding" id="melding" role="status" aria-live="polite"></div>
+  <script src="/web/app.js"></script>
+</body>
+</html>

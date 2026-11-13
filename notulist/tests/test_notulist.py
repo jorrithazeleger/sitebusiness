@@ -51,11 +51,18 @@ class TestHerkennen(unittest.TestCase):
         g = AudioGebruiker(99, bundel="us.zoom.xos", invoer=True)
         self.assertIsNone(actieve_meeting([g], eigen_pids={99}))
 
-    def test_alleen_geluid_afspelen_start_geen_meeting(self):
+    def test_alleen_geluid_afspelen_is_geen_meeting(self):
+        # Teams houdt de speakers ook na de meeting open; dat mag een opname niet vasthouden
         g = AudioGebruiker(1, bundel="com.microsoft.teams2", uitvoer=True)
         self.assertIsNone(actieve_meeting([g]))
-        # maar een lopende Teams-meeting gaat door als je jezelf dempt
-        self.assertEqual(actieve_meeting([g], lopend="Teams"), "Teams")
+        self.assertIsNone(actieve_meeting([g], lopend="Teams"))
+
+    def test_beschrijving_voor_logboek(self):
+        gs = [AudioGebruiker(1, bundel="us.zoom.xos", invoer=True),
+              AudioGebruiker(2, bundel="com.spotify.client", uitvoer=True),
+              AudioGebruiker(3, pad="/Applications/Iets.app/Contents/MacOS/Iets", invoer=True),
+              AudioGebruiker(4, bundel="us.zoom.xos", invoer=True)]
+        self.assertEqual(detectie.beschrijf(gs, eigen_pids={4}), ["Iets", "Zoom"])
 
     def test_browser_die_filmpje_afspeelt_houdt_opname_niet_vast(self):
         g = AudioGebruiker(1, bundel="com.google.Chrome", uitvoer=True)
@@ -301,12 +308,19 @@ class NepOpname:
         self.systeem = None
         self.waarschuwing = None
         self.begin = time.time()
+        self.stil = 0.0
 
     def start(self):
         NepOpname.gestart.append(self.app)
 
     def duur(self):
         return time.time() - self.begin
+
+    def stil_sinds(self):
+        return self.stil
+
+    def niveaus(self):
+        return {"ik": 0.1, "anderen": None}
 
     def stop(self):
         return self.map
@@ -322,18 +336,17 @@ class NepAudio:
 
 class TestKern(unittest.TestCase):
     def setUp(self):
-        import notulist
-        self.notulist = notulist
+        import kern
         NepOpname.gestart = []
         self.config = dict(instellingen.STANDAARD, map=tempfile.mkdtemp(),
                            start_na_seconden=4, stop_na_seconden=10)
         self.audio = NepAudio()
-        p = mock.patch.object(notulist, "Opname", NepOpname)
+        p = mock.patch.object(kern, "Opname", NepOpname)
         p.start()
         self.addCleanup(p.stop)
         self.meldingen = []
-        self.kern = notulist.Kern(self.config, self.audio, lambda t, m: self.meldingen.append(t))
-        self.kern.plan_transcriptie = lambda map_: self.meldingen.append("plan " + map_)
+        self.kern = kern.Kern(self.config, self.audio, lambda t, m: self.meldingen.append(t))
+        self.kern.plan = lambda map_, soort="uitschrijven": self.meldingen.append("plan " + map_)
 
     def wacht(self):
         self.kern._acties.submit(lambda: None).result(5)
@@ -388,6 +401,277 @@ class TestKern(unittest.TestCase):
             self.kern.tik(t)
         self.wacht()
         self.assertEqual(NepOpname.gestart, [])
+
+    def test_stilte_stopt_een_opname_die_niet_vanzelf_stopt(self):
+        # Chrome houdt de microfoon na de meeting vast, maar het is al lang stil
+        self.audio.nu = [AudioGebruiker(1, bundel="com.google.Chrome.helper", invoer=True)]
+        self.kern.tik(0)
+        self.kern.tik(4)
+        self.wacht()
+        self.kern.opname.stil = 5 * 60 + 1
+        self.kern.tik(6)
+        self.wacht()
+        self.assertIsNone(self.kern.opname)
+        self.assertIn("Opname gestopt", self.meldingen)
+        # zolang Chrome de microfoon vasthoudt niet opnieuw beginnen
+        for t in range(8, 40, 2):
+            self.kern.tik(t)
+        self.wacht()
+        self.assertEqual(NepOpname.gestart, ["Chrome"])
+
+    def test_handmatige_opname_stopt_niet_bij_stilte(self):
+        self.kern.start("handmatig", automatisch=False)
+        self.wacht()
+        self.kern.opname.stil = 3600
+        self.kern.tik(0)
+        self.assertIsNotNone(self.kern.opname)
+
+    def test_logt_wie_de_microfoon_gebruikt(self):
+        self.audio.nu = [AudioGebruiker(1, bundel="us.zoom.xos", invoer=True)]
+        self.kern.tik(0)
+        self.assertEqual(self.kern.gezien, ["Zoom"])
+        self.assertEqual(self.kern.status()["gezien"], ["Zoom"])
+
+
+class TestSysteemNiveau(unittest.TestCase):
+    def test_level_regels_houden_geluid_bij(self):
+        s = opname.SysteemOpname("x", "y")
+        s.verwerk_regel("LEVEL 0.0001\n")
+        self.assertIsNone(s.laatste_geluid)
+        s.verwerk_regel("LEVEL 0.2500\n")
+        self.assertAlmostEqual(s.niveau, 0.25)
+        self.assertIsNotNone(s.laatste_geluid)
+        s.verwerk_regel("onzin")
+
+
+def maak_meeting(basis, naam, app="Zoom", titel=None, segmenten=None, samenvatting=None, start=None):
+    import json
+    m = os.path.join(basis, naam)
+    os.makedirs(m)
+    meta = {"app": app, "start": start or 1794576600.0, "einde": (start or 1794576600.0) + 1800,
+            "status": "klaar"}
+    if titel:
+        meta["titel"] = titel
+    opname.schrijf_meta(m, meta)
+    if segmenten is not None:
+        with open(os.path.join(m, transcriptie.TRANSCRIPT), "w") as fh:
+            fh.write("# x\n")
+        with open(os.path.join(m, transcriptie.TRANSCRIPT_JSON), "w") as fh:
+            json.dump({"model": "test", "sporen": "microfoon", "segmenten": segmenten}, fh)
+    if samenvatting is not None:
+        with open(os.path.join(m, "samenvatting.json"), "w") as fh:
+            json.dump(samenvatting, fh)
+    return m
+
+
+SEGS = [{"start": 1.0, "einde": 3.0, "spreker": "Ik", "tekst": "Zullen we het budget bespreken?"},
+        {"start": 4.0, "einde": 8.0, "spreker": "Anderen", "tekst": "Ja, de offerte voor Impazz is binnen."}]
+SAMENVATTING = {"titel": "Budget en offerte", "samenvatting": "Het budget is besproken.",
+                "punten": ["Offerte is binnen"], "besluiten": [], "open_vragen": ["Wanneer tekenen?"],
+                "actiepunten": [{"wat": "Offerte nalopen", "wie": "Ik", "wanneer": "vrijdag"}]}
+
+
+class TestMeetings(unittest.TestCase):
+    def setUp(self):
+        import meetings
+        self.m = meetings
+        self.basis = tempfile.mkdtemp()
+        maak_meeting(self.basis, "20261113-1000-zoom", segmenten=SEGS, samenvatting=SAMENVATTING, start=2000)
+        maak_meeting(self.basis, "20261112-0900-teams", app="Teams", titel="Weekstart", start=1000)
+
+    def test_lijst_nieuwste_eerst_met_titels(self):
+        lijst = self.m.lijst(self.basis)
+        self.assertEqual([i["id"] for i in lijst], ["20261113-1000-zoom", "20261112-0900-teams"])
+        self.assertEqual(lijst[0]["titel"], "Meeting via Zoom")
+        self.assertEqual(lijst[1]["titel"], "Weekstart")
+        self.assertTrue(lijst[0]["samenvatting"])
+
+    def test_zoeken_in_transcript_en_samenvatting(self):
+        self.assertEqual([i["id"] for i in self.m.zoek(self.basis, "impazz offerte")], ["20261113-1000-zoom"])
+        self.assertIn("Impazz", self.m.zoek(self.basis, "impazz")[0]["fragment"])
+        self.assertEqual([i["id"] for i in self.m.zoek(self.basis, "weekstart")], ["20261112-0900-teams"])
+        self.assertEqual(self.m.zoek(self.basis, "nalopen")[0]["id"], "20261113-1000-zoom")
+        self.assertEqual(self.m.zoek(self.basis, "bestaatniet"), [])
+
+    def test_ongeldige_id_wordt_geweigerd(self):
+        self.assertIsNone(self.m.pad_van(self.basis, "../etc"))
+        self.assertIsNone(self.m.detail(self.basis, "bestaat-niet"))
+
+    def test_wijzigen_en_tekst(self):
+        self.assertTrue(self.m.wijzig(self.basis, "20261113-1000-zoom", titel="  Gesprek   met Impazz ", gedaan=[0, 0, -1]))
+        d = self.m.detail(self.basis, "20261113-1000-zoom")
+        self.assertEqual(d["titel"], "Gesprek met Impazz")
+        self.assertEqual(d["gedaan"], [0])
+        tekst = self.m.als_tekst(self.basis, "20261113-1000-zoom")
+        self.assertIn("Actiepunten:\n- Offerte nalopen (Ik, vrijdag)", tekst)
+        self.assertIn("Anderen (00:00:04): Ja, de offerte", tekst)
+        self.assertTrue(self.m.exportnaam(self.basis, "20261113-1000-zoom").endswith("-notulen-gesprek-met-impazz.txt"))
+        self.m.wijzig(self.basis, "20261113-1000-zoom", titel="")
+        self.assertEqual(self.m.detail(self.basis, "20261113-1000-zoom")["titel"], "Meeting via Zoom")
+
+    def test_naar_prullenmand(self):
+        prul = tempfile.mkdtemp()
+        self.assertTrue(self.m.naar_prullenmand(self.basis, "20261112-0900-teams", prul))
+        self.assertEqual(os.listdir(prul), ["Notulist 20261112-0900-teams"])
+        self.assertEqual(len(self.m.lijst(self.basis)), 1)
+
+
+class NepClaude:
+    """Doet zich voor als anthropic.Anthropic() en onthoudt het verzoek."""
+
+    def __init__(self, antwoord, stop="end_turn"):
+        import types
+        self.verzoek = None
+        blok = types.SimpleNamespace(type="text", text=antwoord)
+        resultaat = types.SimpleNamespace(stop_reason=stop, content=[blok], _request_id="req_test")
+
+        def create(**kwargs):
+            self.verzoek = kwargs
+            return resultaat
+
+        self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(create=create))
+
+
+class TestSamenvatting(unittest.TestCase):
+    def setUp(self):
+        import samenvatting
+        self.s = samenvatting
+        self.basis = tempfile.mkdtemp()
+        self.map = maak_meeting(self.basis, "20261113-1000-zoom", segmenten=SEGS)
+
+    def test_maakt_notulen_en_bewaart_ze(self):
+        import json
+        nep = NepClaude(json.dumps(SAMENVATTING))
+        data = self.s.maak(self.map, dict(instellingen.STANDAARD, naam_ik="Jorrit"), client=nep)
+        self.assertEqual(data["titel"], "Budget en offerte")
+        v = nep.verzoek
+        self.assertEqual(v["model"], "claude-opus-5-5")
+        self.assertEqual(v["fallbacks"], "default")
+        self.assertEqual(v["output_config"]["format"]["type"], "json_schema")
+        self.assertIn('"Jorrit" is degene', v["system"])
+        self.assertIn("[00:00:04] Anderen: Ja, de offerte voor Impazz is binnen.", v["messages"][0]["content"])
+        self.assertEqual(opname.lees_meta(self.map)["ai_titel"], "Budget en offerte")
+        with open(os.path.join(self.map, "samenvatting.md"), encoding="utf-8") as fh:
+            md = fh.read()
+        self.assertIn("- [ ] Offerte nalopen (Ik, vrijdag)", md)
+
+    def test_weigering_en_onzin(self):
+        with self.assertRaises(self.s.SamenvattingFout):
+            self.s.maak(self.map, instellingen.STANDAARD, client=NepClaude("", stop="refusal"))
+        with self.assertRaises(self.s.SamenvattingFout):
+            self.s.maak(self.map, instellingen.STANDAARD, client=NepClaude("geen json"))
+
+    def test_zonder_transcript(self):
+        leeg = maak_meeting(self.basis, "leeg")
+        with self.assertRaises(self.s.SamenvattingFout):
+            self.s.maak(leeg, instellingen.STANDAARD, client=NepClaude("{}"))
+
+    def test_schema_is_streng(self):
+        def check(schema):
+            if schema.get("type") == "object":
+                self.assertFalse(schema["additionalProperties"])
+                self.assertEqual(set(schema["required"]), set(schema["properties"]))
+                for sub in schema["properties"].values():
+                    check(sub)
+            if schema.get("type") == "array":
+                check(schema["items"])
+        check(self.s.SCHEMA)
+
+
+class TestAfspeelbestand(unittest.TestCase):
+    def test_mix_van_beide_sporen(self):
+        m = tempfile.mkdtemp()
+        schrijf_wav(os.path.join(m, opname.MIC), np.full(16000, 0.2))
+        schrijf_wav(os.path.join(m, opname.SYSTEEM), np.full(16000, 0.3))
+        with mock.patch("shutil.which", return_value=None):
+            pad = transcriptie.maak_afspeelbestand(m, verschuiving=0.5)
+        self.assertTrue(pad.endswith(transcriptie.AFSPEEL_WAV))
+        audio = transcriptie.laad_audio(pad)
+        self.assertEqual(len(audio), 24000)               # 1 s + 0,5 s verschoven
+        self.assertAlmostEqual(float(audio[4000]), 0.2, places=2)   # alleen ik
+        self.assertAlmostEqual(float(audio[12000]), 0.5, places=2)  # samen
+        self.assertAlmostEqual(float(audio[20000]), 0.3, places=2)  # alleen de anderen
+
+
+class TestServer(unittest.TestCase):
+    def setUp(self):
+        import json
+        import urllib.request
+        import kern
+        import server
+        self.json, self.urllib = json, urllib.request
+        self.basis = tempfile.mkdtemp()
+        maak_meeting(self.basis, "20261113-1000-zoom", segmenten=SEGS, samenvatting=SAMENVATTING)
+        self.wav = os.path.join(self.basis, "20261113-1000-zoom", transcriptie.AFSPEEL_WAV)
+        schrijf_wav(self.wav, np.zeros(1000))
+        p = mock.patch.object(instellingen, "BESTAND", os.path.join(self.basis, "instellingen.json"))
+        p.start()
+        self.addCleanup(p.stop)
+        self.config = dict(instellingen.STANDAARD, map=self.basis)
+        self.kern = kern.Kern(self.config, None)
+        self.kern.plan = lambda map_, soort="uitschrijven": setattr(self, "gepland", (os.path.basename(map_), soort))
+        self.prul = tempfile.mkdtemp()
+        self.srv = server.Server(self.kern, {"prullenmand": self.prul, "toestemmingen": lambda: "alles goed"})
+        self.srv.start()
+        self.addCleanup(self.srv.stop)
+        self.basis_url = "http://127.0.0.1:%d" % self.srv.poort
+
+    def vraag(self, methode, pad, body=None, token=True, headers=None):
+        import urllib.error
+        h = {"Content-Type": "application/json"}
+        if token:
+            h["X-Notulist-Token"] = self.srv.token
+        h.update(headers or {})
+        data = self.json.dumps(body).encode() if body is not None else None
+        req = self.urllib.Request(self.basis_url + pad, data=data, headers=h, method=methode)
+        try:
+            with self.urllib.urlopen(req, timeout=5) as r:
+                return r.status, r.read(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), dict(e.headers)
+
+    def test_zonder_sleutel_geen_toegang(self):
+        self.assertEqual(self.vraag("GET", "/api/status", token=False)[0], 403)
+        self.assertEqual(self.vraag("GET", "/", token=False)[0], 403)
+        self.assertEqual(self.vraag("GET", "/api/status", headers={"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.vraag("GET", "/?t=" + self.srv.token, token=False)[0], 200)
+        self.assertEqual(self.vraag("GET", "/web/app.js", token=False)[0], 200)
+
+    def test_meetings_en_wijzigen(self):
+        status, body, _ = self.vraag("GET", "/api/meetings")
+        self.assertEqual(self.json.loads(body)[0]["id"], "20261113-1000-zoom")
+        status, body, _ = self.vraag("GET", "/api/meetings?q=impazz")
+        self.assertEqual(len(self.json.loads(body)), 1)
+        status, body, _ = self.vraag("PATCH", "/api/meetings/20261113-1000-zoom", {"titel": "Nieuw", "gedaan": [0]})
+        d = self.json.loads(body)
+        self.assertEqual((d["titel"], d["gedaan"], d["audio"]), ("Nieuw", [0], True))
+        self.assertEqual(self.vraag("PATCH", "/api/meetings/20261113-1000-zoom", {"gedaan": "x"})[0], 400)
+        self.assertEqual(self.vraag("GET", "/api/meetings/bestaat-niet")[0], 404)
+
+    def test_audio_met_bereik(self):
+        status, body, headers = self.vraag("GET", "/api/meetings/20261113-1000-zoom/audio", headers={"Range": "bytes=10-19"})
+        self.assertEqual(status, 206)
+        self.assertEqual(len(body), 10)
+        self.assertEqual(headers["Content-Range"], "bytes 10-19/%d" % os.path.getsize(self.wav))
+
+    def test_acties(self):
+        self.assertEqual(self.vraag("POST", "/api/meetings/20261113-1000-zoom/uitschrijven")[0], 200)
+        self.assertEqual(self.gepland, ("20261113-1000-zoom", "uitschrijven"))
+        with mock.patch("samenvatting.beschikbaar", return_value=False):
+            self.assertEqual(self.vraag("POST", "/api/meetings/20261113-1000-zoom/samenvatten")[0], 400)
+        status, body, _ = self.vraag("POST", "/api/toestemmingen")
+        self.assertEqual(self.json.loads(body)["tekst"], "alles goed")
+        self.assertEqual(self.vraag("DELETE", "/api/meetings/20261113-1000-zoom")[0], 200)
+        self.assertEqual(len(os.listdir(self.prul)), 1)
+
+    def test_instellingen(self):
+        status, body, _ = self.vraag("PATCH", "/api/instellingen", {"stop_na_seconden": 30, "onbekend": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.kern.detector.stop_na, 30)
+        self.assertEqual(instellingen.laad(instellingen.BESTAND)["stop_na_seconden"], 30)
+        self.assertEqual(self.vraag("PATCH", "/api/instellingen", {"stop_na_seconden": "veel"})[0], 400)
+        self.assertEqual(self.vraag("PATCH", "/api/instellingen", {"model": "groot"})[0], 400)
+        self.assertEqual(self.vraag("PATCH", "/api/instellingen", {"automatisch_opnemen": 1})[0], 400)
 
 
 if __name__ == "__main__":

@@ -1,40 +1,41 @@
-"""Notulist: neemt je meetings op en maakt er een transcript van, helemaal op je eigen Mac.
+"""Notulist: neemt je meetings op en maakt er een transcript en notulen van, op je eigen Mac.
 
-Draait als icoon in de menubalk. Zodra een meeting-app (Zoom, Teams, Meet in de browser, ...)
-je microfoon gebruikt, start de opname vanzelf; als de meeting voorbij is stopt hij en begint
-het transcriberen.
+Draait als icoon in de menubalk, met een venster waarin je je meetings terugvindt. Zodra een
+meeting-app (Zoom, Teams, Meet in de browser, ...) je microfoon gebruikt, start de opname
+vanzelf; als de meeting voorbij is stopt hij en begint het uitschrijven.
 
 Gebruik:
-  python notulist.py                 de menubalk-app starten (ook: --app)
+  python notulist.py                 de app starten (ook: --app)
   python notulist.py --diagnose      laten zien welke apps nu audio gebruiken en of alles werkt
-  python notulist.py --transcribeer <map>   een opgenomen meeting (opnieuw) transcriberen
+  python notulist.py --transcribeer <map>   een opgenomen meeting (opnieuw) uitschrijven
 """
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import fcntl
+import json
 import logging
 import logging.handlers
 import os
-import queue
 import subprocess
 import sys
 import threading
-import time
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import instellingen as inst  # noqa: E402
+import meetings  # noqa: E402
 import transcriptie  # noqa: E402
-from detectie import (CoreAudio, CoreAudioNietBeschikbaar, MeetingDetector,  # noqa: E402
-                      actieve_meeting, eigen_pids)
-from opname import Opname, helper_pad  # noqa: E402
+from detectie import CoreAudio, CoreAudioNietBeschikbaar, actieve_meeting, eigen_pids  # noqa: E402
+from kern import Kern  # noqa: E402
+from opname import helper_pad  # noqa: E402
 
 log = logging.getLogger("notulist")
 LOGBESTAND = os.path.expanduser("~/Library/Logs/Notulist.log")
 ICONEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "iconen")
-TIK = 2.0  # seconden tussen twee controles
+VENSTER_INFO = os.path.join(inst.SUPPORT, "venster.json")  # poort en sleutel van de server
+TIK = 2.0  # seconden tussen twee controles op meetings
 
 
 def logging_instellen(naar_scherm=False):
@@ -69,159 +70,10 @@ def melding(titel, tekst):
                         'subtitle "%s"' % (esc(tekst), esc(titel))], capture_output=True)
 
 
-class Kern:
-    """Alles behalve de menubalk: meetings herkennen, opnemen en transcriberen."""
-
-    def __init__(self, config, audio=None, melder=melding):
-        self.config = config
-        self.audio = audio
-        self.melder = melder
-        self.detector = MeetingDetector(config["start_na_seconden"], config["stop_na_seconden"])
-        self.opname: Opname | None = None
-        self.bezig_met_starten = False
-        self.negeer_app = None  # na handmatig stoppen niet meteen opnieuw starten
-        self.voortgang = None   # (mapnaam, fractie) tijdens transcriberen
-        self.wachtrij: queue.Queue = queue.Queue()
-        self.in_wachtrij: set[str] = set()
-        self.laatste_fout = None
-        self._acties = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._slot = threading.Lock()
-        self.transcriber = transcriptie.Transcriber(config["model"], config["taal"])
-        threading.Thread(target=self._transcribeer_lus, name="transcriberen", daemon=True).start()
-        for map_ in transcriptie.wachtende_mappen(inst.opnamemap(config)):
-            self.plan_transcriptie(map_)
-
-    # -- meetings herkennen -------------------------------------------------
-
-    def tik(self, nu=None):
-        nu = nu if nu is not None else time.monotonic()
-        opname = self.opname
-        if opname and opname.duur() > self.config["maximale_duur_minuten"] * 60:
-            log.info("maximale duur bereikt")
-            self.stop()
-            return
-        if opname and opname.systeem and not opname.systeem.actief():
-            log.warning("systeemgeluid-opname is onverwacht gestopt")
-        if self.audio is None:
-            return
-        volgt_automatisch = opname is not None and opname.automatisch
-        if not self.config["automatisch_opnemen"] and not volgt_automatisch:
-            return
-        try:
-            gebruikers = self.audio.gebruikers()
-        except Exception:  # noqa: BLE001
-            log.exception("audio uitlezen")
-            return
-        app = actieve_meeting(gebruikers, eigen_pids(), self.config["browsers_meenemen"],
-                              lopend=self.detector.bezig)
-        if self.negeer_app:
-            if app is None:
-                self.negeer_app = None
-            else:
-                return
-        if opname is not None and not opname.automatisch:
-            return  # handmatige opname: alleen handmatig stoppen
-        actie = self.detector.update(app, nu)
-        if actie and actie[0] == "start" and self.opname is None and not self.bezig_met_starten:
-            self.start(actie[1], automatisch=True)
-        elif actie and actie[0] == "stop" and self.opname is not None:
-            self.stop()
-
-    # -- opnemen ------------------------------------------------------------
-
-    def start(self, app="handmatig", automatisch=False):
-        with self._slot:
-            if self.opname is not None or self.bezig_met_starten:
-                return
-            self.bezig_met_starten = True
-        self._acties.submit(self._start, app, automatisch)
-
-    def _start(self, app, automatisch):
-        try:
-            opname = Opname(inst.opnamemap(self.config), app, automatisch)
-            opname.start()
-            self.opname = opname
-            self.laatste_fout = None
-            log.info("opname gestart: %s (%s)", app, opname.map)
-            self.melder("Opname gestart", "%s. Stoppen kan via het menubalk-icoon." % (
-                "Meeting in %s herkend" % app if automatisch else "Handmatige opname"))
-            if opname.waarschuwing:
-                self.melder("Let op", opname.waarschuwing)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("opname starten")
-            self.laatste_fout = str(exc)
-            self.detector.reset()
-            self.negeer_app = app if automatisch else None
-            self.melder("Opnemen lukt niet", str(exc))
-        finally:
-            self.bezig_met_starten = False
-
-    def stop(self, handmatig=False):
-        opname = self.opname
-        if opname is None:
-            return
-        self.opname = None
-        if handmatig and opname.automatisch:
-            self.negeer_app = opname.app
-        self.detector.reset()
-        self._acties.submit(self._stop, opname)
-
-    def _stop(self, opname):
-        try:
-            map_ = opname.stop()
-            log.info("opname gestopt na %.0f s", opname.duur())
-            self.plan_transcriptie(map_)
-        except Exception:  # noqa: BLE001
-            log.exception("opname stoppen")
-
-    def afsluiten(self):
-        if self.opname:
-            opname, self.opname = self.opname, None
-            opname.stop()
-
-    # -- transcriberen ------------------------------------------------------
-
-    def plan_transcriptie(self, map_):
-        if map_ in self.in_wachtrij:
-            return
-        self.in_wachtrij.add(map_)
-        self.wachtrij.put(map_)
-
-    def _transcribeer_lus(self):
-        while True:
-            map_ = self.wachtrij.get()
-            naam = os.path.basename(map_)
-            self.voortgang = (naam, 0.0)
-            try:
-                def bij(f):
-                    self.voortgang = (naam, f)
-                uit = transcriptie.verwerk(map_, self.transcriber, self.config, bij)
-                log.info("transcript klaar: %s", uit)
-                self.melder("Transcript klaar", naam)
-            except Exception as exc:  # noqa: BLE001
-                log.exception("transcriberen %s", naam)
-                self.melder("Transcriberen mislukt", "%s: %s" % (naam, exc))
-            finally:
-                self.voortgang = None
-                self.in_wachtrij.discard(map_)
-
-    # -- overzicht ----------------------------------------------------------
-
-    def recente_meetings(self, aantal=10):
-        basis = inst.opnamemap(self.config)
-        if not os.path.isdir(basis):
-            return []
-        mappen = sorted((d for d in os.listdir(basis) if os.path.isdir(os.path.join(basis, d))),
-                        reverse=True)
-        return [os.path.join(basis, d) for d in mappen[:aantal]]
-
-
-# ---------------------------------------------------------------------------
-# Menubalk
-# ---------------------------------------------------------------------------
-
 def start_app():
     import rumps
+    from server import Server
+    from venster import Venster
 
     config = inst.laad()
     if not os.path.exists(inst.BESTAND):
@@ -231,7 +83,22 @@ def start_app():
     except (CoreAudioNietBeschikbaar, OSError) as exc:
         log.warning("automatisch herkennen niet mogelijk: %s", exc)
         audio = None
-    kern = Kern(config, audio)
+    kern = Kern(config, audio, melding)
+
+    verzoeken = []  # vensterverzoeken uit andere threads, afgehandeld op de hoofdthread
+    server = Server(kern, {
+        "toestemmingen": controleer_toestemmingen,
+        "logboek": lambda: open_bestand(LOGBESTAND),
+        "toon": lambda js=None: verzoeken.append(js),
+    })
+    server.start()
+    try:
+        with open(VENSTER_INFO, "w", encoding="utf-8") as fh:
+            json.dump({"poort": server.poort, "token": server.token}, fh)
+        os.chmod(VENSTER_INFO, 0o600)
+    except OSError:
+        pass
+    venster = Venster(server.url)
 
     class NotulistApp(rumps.App):
         def __init__(self):
@@ -241,30 +108,33 @@ def start_app():
             self._icoon = "rust"
             self.status = rumps.MenuItem("Notulist start...")
             self.knop = rumps.MenuItem("Neem nu op", callback=self.wissel_opname)
-            self.auto = rumps.MenuItem("Automatisch opnemen bij meetings", callback=self.wissel_auto)
+            self.auto = rumps.MenuItem("Meetings vanzelf opnemen", callback=self.wissel_auto)
             self.auto.state = int(bool(config["automatisch_opnemen"]))
-            self.recent = rumps.MenuItem("Recente meetings")
-            self.recent.add(rumps.MenuItem("(nog geen)"))
             self.menu = [
-                self.status, None, self.knop, self.auto, None, self.recent,
-                rumps.MenuItem("Open map met meetings", callback=self.open_map), None,
-                rumps.MenuItem("Controleer toestemmingen", callback=self.toestemmingen),
-                rumps.MenuItem("Instellingen aanpassen...", callback=self.instellingen),
-                rumps.MenuItem("Logboek bekijken", callback=lambda _: open_bestand(LOGBESTAND)),
+                rumps.MenuItem("Open Notulist", callback=lambda _: venster.toon(), key="o"),
+                None, self.status, self.knop, self.auto, None,
+                rumps.MenuItem("Instellingen...", callback=lambda _: venster.toon("openInstellingen()"), key=","),
+                rumps.MenuItem("Open map met meetings", callback=self.open_map),
                 None,
                 rumps.MenuItem("Stop Notulist", callback=self.stoppen, key="q"),
             ]
-            self._recent_lijst = None
-            self.timer = rumps.Timer(self.tik, TIK)
-            self.timer.start()
             if audio is None:
                 self.auto.state = 0
-                self.auto.title = "Automatisch opnemen (vraagt macOS 14 of nieuwer)"
-            vlag = os.path.join(inst.SUPPORT, ".toestemming-gevraagd")
-            if not os.path.exists(vlag):
-                os.makedirs(inst.SUPPORT, exist_ok=True)
-                open(vlag, "w").close()
+                self.auto.title = "Meetings vanzelf opnemen (vraagt macOS 14)"
+            rumps.Timer(self.tik, TIK).start()
+            rumps.Timer(self.verwerk_verzoeken, 0.3).start()
+
+            os.makedirs(inst.SUPPORT, exist_ok=True)
+            eerste_keer = os.path.join(inst.SUPPORT, ".toestemming-gevraagd")
+            if not os.path.exists(eerste_keer):
+                open(eerste_keer, "w").close()
                 threading.Thread(target=vraag_toestemmingen, daemon=True).start()
+            # De eerste keer (ook na de update met het venster) meteen het venster laten zien.
+            venster_gezien = os.path.join(inst.SUPPORT, ".venster-getoond")
+            if not os.path.exists(venster_gezien):
+                open(venster_gezien, "w").close()
+                verzoeken.append(None)
+            koppel_heropenen(venster)
 
         @staticmethod
         def icoon_pad(naam):
@@ -277,6 +147,10 @@ def start_app():
                 self._icoon = icoon
             if tekst != self.title:
                 self.title = tekst
+
+        def verwerk_verzoeken(self, _):
+            while verzoeken:
+                venster.toon(verzoeken.pop(0))
 
         def tik(self, _):
             kern.tik()
@@ -295,9 +169,13 @@ def start_app():
             else:
                 self.knop.title = "Neem nu op"
                 if kern.voortgang:
-                    naam, f = kern.voortgang
-                    self.toon("uitschrijven", " %d%%" % int(f * 100))
-                    self.status.title = "Transcriberen: %s (%d%%)" % (naam, int(f * 100))
+                    naam, f, wat = kern.voortgang
+                    if wat == "samenvatten":
+                        self.toon("uitschrijven")
+                        self.status.title = "Notulen maken: %s" % naam
+                    else:
+                        self.toon("uitschrijven", " %d%%" % int((f or 0) * 100))
+                        self.status.title = "Uitschrijven: %s (%d%%)" % (naam, int((f or 0) * 100))
                 else:
                     self.toon("rust")
                     if kern.laatste_fout:
@@ -309,21 +187,7 @@ def start_app():
             wachtend = kern.wachtrij.qsize()
             if wachtend:
                 self.status.title += " (+%d in de wachtrij)" % wachtend
-            self.ververs_recent()
-
-        def ververs_recent(self):
-            lijst = kern.recente_meetings()
-            klaar = tuple((m, os.path.exists(os.path.join(m, transcriptie.TRANSCRIPT))) for m in lijst)
-            if klaar == self._recent_lijst:
-                return
-            self._recent_lijst = klaar
-            self.recent.clear()
-            if not lijst:
-                self.recent.add(rumps.MenuItem("(nog geen)"))
-            for map_, heeft in klaar:
-                titel = os.path.basename(map_) + ("" if heeft else "  (bezig)")
-                doel = os.path.join(map_, transcriptie.TRANSCRIPT) if heeft else map_
-                self.recent.add(rumps.MenuItem(titel, callback=lambda _, d=doel: open_bestand(d)))
+            self.auto.state = int(bool(config["automatisch_opnemen"]) and audio is not None)
 
         def wissel_opname(self, _):
             if kern.opname:
@@ -334,12 +198,12 @@ def start_app():
 
         def wissel_auto(self, item):
             if audio is None:
-                rumps.alert("Notulist", "Automatisch opnemen werkt vanaf macOS 14 (Sonoma).")
+                rumps.alert("Notulist", "Meetings vanzelf opnemen werkt vanaf macOS 14 (Sonoma).")
                 return
             config["automatisch_opnemen"] = not config["automatisch_opnemen"]
-            item.state = int(config["automatisch_opnemen"])
             inst.bewaar(config)
             kern.detector.reset()
+            kern.gewijzigd()
             self.ververs()
 
         def open_map(self, _):
@@ -347,19 +211,42 @@ def start_app():
             os.makedirs(pad, exist_ok=True)
             subprocess.run(["open", pad])
 
-        def instellingen(self, _):
-            inst.bewaar(config)
-            subprocess.run(["open", "-t", inst.BESTAND])
-            rumps.alert("Notulist", "Bewaar je wijzigingen en start Notulist daarna opnieuw.")
-
-        def toestemmingen(self, _):
-            rumps.alert("Notulist", controleer_toestemmingen())
-
         def stoppen(self, _):
             kern.afsluiten()
+            server.stop()
             rumps.quit_application()
 
     NotulistApp().run()
+
+
+def koppel_heropenen(venster):
+    """Dubbelklik je op Notulist terwijl het al draait, dan opent het venster."""
+    try:
+        import objc
+        from rumps import rumps as rumps_intern
+
+        def heropen(self, app, zichtbaar):
+            venster.toon()
+            return True
+
+        objc.classAddMethods(rumps_intern.NSApp, [objc.selector(
+            heropen, selector=b"applicationShouldHandleReopen:hasVisibleWindows:", signature=b"Z@:@Z")])
+    except Exception:  # noqa: BLE001 - dan opent het venster alleen via het menubalk-icoon
+        log.exception("heropenen koppelen")
+
+
+def toon_bestaand_venster() -> bool:
+    """Draait Notulist al? Vraag het dan zijn venster te tonen."""
+    try:
+        with open(VENSTER_INFO, encoding="utf-8") as fh:
+            info = json.load(fh)
+        req = urllib.request.Request("http://127.0.0.1:%d/api/venster" % info["poort"], data=b"{}",
+                                     headers={"X-Notulist-Token": info["token"],
+                                              "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3).read()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def vraag_toestemmingen():
@@ -414,6 +301,7 @@ def diagnose():
     print("Instellingen: %s" % inst.BESTAND)
     print("Opnames:      %s" % inst.opnamemap(config))
     print("Hulpprogramma systeemgeluid: %s" % (helper_pad() or "ontbreekt"))
+    print("Meetings:     %d" % len(meetings.alle_ids(inst.opnamemap(config))))
     try:
         audio = CoreAudio()
     except Exception as exc:  # noqa: BLE001
@@ -425,7 +313,7 @@ def diagnose():
         print("  (geen)")
     for g in gebruikers:
         wat = "+".join(w for w, aan in (("microfoon", g.invoer), ("geluid", g.uitvoer)) if aan)
-        print("  pid %-6d %-12s %s  %s" % (g.pid, wat, g.bundel or "-", g.pad))
+        print("  pid %-6d %-18s %s  %s" % (g.pid, wat, g.bundel or "-", g.pad))
     app = actieve_meeting(gebruikers, eigen_pids(), config["browsers_meenemen"])
     print("\nMeeting herkend: %s" % (app or "nee"))
     return 0
@@ -443,10 +331,10 @@ def enkele_instantie():
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Notulist: meetings opnemen en transcriberen")
-    p.add_argument("--app", action="store_true", help="menubalk-app starten (standaard)")
+    p = argparse.ArgumentParser(description="Notulist: meetings opnemen en uitschrijven")
+    p.add_argument("--app", action="store_true", help="de app starten (standaard)")
     p.add_argument("--diagnose", action="store_true", help="laat zien wat Notulist nu ziet")
-    p.add_argument("--transcribeer", metavar="MAP", help="een opgenomen meeting transcriberen")
+    p.add_argument("--transcribeer", metavar="MAP", help="een opgenomen meeting uitschrijven")
     args = p.parse_args(argv)
 
     if args.diagnose:
@@ -462,7 +350,8 @@ def main(argv=None):
     logging_instellen()
     slot = enkele_instantie()
     if slot is None:
-        log.info("Notulist draait al")
+        log.info("Notulist draait al; venster van de draaiende Notulist tonen")
+        toon_bestaand_venster()
         return 0
     log.info("Notulist gestart")
     start_app()

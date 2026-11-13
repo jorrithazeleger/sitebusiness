@@ -3,7 +3,8 @@
 //
 // Gebruik:
 //   notulist-audiocap <uitvoer.wav>   opnemen tot SIGINT of SIGTERM; meldt "READY <unix-tijd>"
-//                                     op stdout zodra de opname loopt (tijd = begin van het bestand)
+//                                     op stdout zodra de opname loopt (tijd = begin van het bestand),
+//                                     en daarna elke seconde "LEVEL <piek 0..1>"
 //   notulist-audiocap --check         controleert de toestemming voor schermopname
 //                                     (exit 0 = in orde, 2 = geen toestemming)
 //
@@ -36,6 +37,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var converterBron: AVAudioFormat?
     var startTijd = CMTime.invalid
     var geschreven: AVAudioFramePosition = 0
+    var piek: Float = 0
+    var laatsteMelding = Date()
 
     init(url: URL) {
         self.url = url
@@ -114,6 +117,21 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             geschreven += AVAudioFramePosition(buffer.frameLength)
         } catch {
             fout("schrijven mislukt: \(error.localizedDescription)")
+        }
+        meldNiveau(buffer)
+    }
+
+    // Elke seconde het hoogste niveau melden, zodat Notulist stilte na een meeting herkent.
+    func meldNiveau(_ buffer: AVAudioPCMBuffer) {
+        if let kanaal = buffer.floatChannelData {
+            for i in 0..<Int(buffer.frameLength) {
+                piek = max(piek, abs(kanaal[0][i]))
+            }
+        }
+        if Date().timeIntervalSince(laatsteMelding) >= 1.0 {
+            meld(String(format: "LEVEL %.4f", piek))
+            piek = 0
+            laatsteMelding = Date()
         }
     }
 

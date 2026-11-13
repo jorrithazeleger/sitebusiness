@@ -21,7 +21,7 @@ import sysconfig
 import tempfile
 
 BUNDLE_ID = "nl.notulist.app"
-VERSIE = "1.0"
+VERSIE = "2.0"
 
 LAUNCHER = r"""
 #include <dlfcn.h>
@@ -181,6 +181,8 @@ def build(app, script, swift_bron):
             "Notulist neemt je microfoon op tijdens meetings om er een transcript van te maken.",
         "NSAudioCaptureUsageDescription":
             "Notulist neemt het geluid van je meetings op om er een transcript van te maken.",
+        # Het venster praat via http met de server van Notulist op 127.0.0.1; dat moet mogen.
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     }
     if heeft_icoon:
         info["CFBundleIconFile"] = "Notulist"

@@ -16,6 +16,8 @@ STANDAARD = {
     "start_na_seconden": 4,
     # Zoveel seconden na het einde van de meeting stopt de opname.
     "stop_na_seconden": 20,
+    # Vangnet: is het zo lang helemaal stil (jij en de anderen), dan stopt de opname ook.
+    "stilte_stop_minuten": 5,
     # Veiligheidsgrens: langer dan dit neemt Notulist niet op.
     "maximale_duur_minuten": 240,
     # Waar opnames en transcripties komen.
@@ -26,13 +28,17 @@ STANDAARD = {
     "taal": "nl",
     # Audiobestanden bewaren na het transcriberen.
     "audio_bewaren": True,
+    # Na het uitschrijven vanzelf een samenvatting met actiepunten maken (vraagt een
+    # Anthropic API-sleutel; het transcript gaat dan naar Claude).
+    "samenvatten_automatisch": True,
     # Hoe jij en de anderen in het transcript heten.
     "naam_ik": "Ik",
     "naam_anderen": "Anderen",
 }
 
 
-def laad(pad: str = BESTAND) -> dict:
+def laad(pad: str | None = None) -> dict:
+    pad = pad or BESTAND
     data = dict(STANDAARD)
     try:
         with open(pad, encoding="utf-8") as fh:
@@ -44,7 +50,8 @@ def laad(pad: str = BESTAND) -> dict:
     return data
 
 
-def bewaar(data: dict, pad: str = BESTAND) -> None:
+def bewaar(data: dict, pad: str | None = None) -> None:
+    pad = pad or BESTAND
     os.makedirs(os.path.dirname(pad), exist_ok=True)
     tijdelijk = pad + ".tmp"
     with open(tijdelijk, "w", encoding="utf-8") as fh:

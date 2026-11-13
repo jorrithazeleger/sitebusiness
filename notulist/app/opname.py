@@ -26,6 +26,10 @@ from instellingen import SUPPORT
 log = logging.getLogger("notulist")
 
 META = "meta.json"
+# Boven dit niveau (0..1) telt een stukje opname als "er klinkt iets". Spraak zit daar ruim
+# boven; stilte van een gedempte meeting of digitale stilte eronder.
+DREMPEL_MIC = 0.03
+DREMPEL_SYSTEEM = 0.01
 MIC = "mic.wav"
 SYSTEEM = "systeem.wav"
 
@@ -80,6 +84,8 @@ class MicOpname:
         self.start_tijd = None
         self.samplerate = None
         self.piek = 0
+        self.niveau = 0.0          # piek van het laatste stukje, 0..1
+        self.laatste_geluid = None  # time.time() van het laatste stukje met geluid
         self._stream = None
         self._wav = None
         self._wachtrij: queue.Queue = queue.Queue()
@@ -95,10 +101,13 @@ class MicOpname:
             if blok is None:
                 break
             self._wav.writeframes(blok)
-            if self.piek < 32767:
-                samples = array.array("h", blok)
-                if samples:
-                    self.piek = max(self.piek, max(abs(min(samples)), max(samples)))
+            samples = array.array("h", blok)
+            if samples:
+                piek = max(abs(min(samples)), max(samples))
+                self.piek = max(self.piek, piek)
+                self.niveau = piek / 32768.0
+                if self.niveau > DREMPEL_MIC:
+                    self.laatste_geluid = time.time()
 
     def start(self):
         import sounddevice as sd
@@ -148,6 +157,8 @@ class SysteemOpname:
         self.helper = helper
         self.pad = pad
         self.start_tijd = None
+        self.niveau = 0.0
+        self.laatste_geluid = None
         self._proc = None
         self._stderr: list[str] = []
 
@@ -155,9 +166,18 @@ class SysteemOpname:
         self._proc = subprocess.Popen([self.helper, self.pad], stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True)
         regel: list[str] = []
+        klaar = threading.Event()
+        proc = self._proc
 
         def lees_uit():
-            regel.append(self._proc.stdout.readline())
+            # Eerste regel: READY <tijd>. Daarna elke seconde LEVEL <piek>.
+            regel.append(proc.stdout.readline())
+            klaar.set()
+            try:
+                for r in proc.stdout:
+                    self.verwerk_regel(r)
+            except (OSError, ValueError):
+                pass
 
         def lees_fouten():
             for r in self._proc.stderr:
@@ -167,7 +187,7 @@ class SysteemOpname:
         lezer = threading.Thread(target=lees_uit, daemon=True)
         lezer.start()
         threading.Thread(target=lees_fouten, daemon=True).start()
-        lezer.join(wacht)
+        klaar.wait(wacht)
         eerste = regel[0].strip() if regel else ""
         if not eerste.startswith("READY"):
             self._afsluiten()
@@ -194,6 +214,16 @@ class SysteemOpname:
             except (OSError, ValueError):
                 pass
         self._proc = None
+
+    def verwerk_regel(self, regel: str):
+        delen = regel.split()
+        if len(delen) == 2 and delen[0] == "LEVEL":
+            try:
+                self.niveau = float(delen[1])
+            except ValueError:
+                return
+            if self.niveau > DREMPEL_SYSTEEM:
+                self.laatste_geluid = time.time()
 
     def actief(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -251,6 +281,17 @@ class Opname:
 
     def duur(self) -> float:
         return time.time() - self.start_tijd if self.start_tijd else 0.0
+
+    def stil_sinds(self) -> float:
+        """Seconden sinds er op een van de sporen voor het laatst iets klonk."""
+        tijden = [t for t in (self.mic.laatste_geluid,
+                              self.systeem.laatste_geluid if self.systeem else None) if t]
+        laatste = max(tijden) if tijden else self.start_tijd
+        return time.time() - laatste if laatste else 0.0
+
+    def niveaus(self):
+        return {"ik": round(self.mic.niveau, 3),
+                "anderen": round(self.systeem.niveau, 3) if self.systeem else None}
 
     def stop(self):
         self.mic.stop()

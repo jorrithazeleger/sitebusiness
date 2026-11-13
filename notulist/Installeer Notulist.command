@@ -93,7 +93,8 @@ PLIST
 echo "  Notulist start voortaan vanzelf als je inlogt."
 
 echo ""
-echo "  Klaar! Rechtsboven in je menubalk staat nu een microfoontje."
+echo "  Klaar! Notulist opent zo een venster met je meetings. Rechtsboven in je menubalk"
+echo "  staat een microfoontje; daarmee open je het venster later weer (Open Notulist)."
 echo ""
 echo "  macOS vraagt zo om twee toestemmingen. Klik bij allebei op Sta toe:"
 echo "    1. Microfoon: om jou op te nemen."

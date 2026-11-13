@@ -75,26 +75,36 @@ def herken_app(gebruiker: AudioGebruiker, browsers: bool = True, extra: tuple = 
 def actieve_meeting(gebruikers, eigen_pids=(), browsers=True, extra=(), lopend=None):
     """Bepaalt welke meeting-app nu een meeting heeft.
 
-    Een meeting begint als een meeting-app de microfoon gebruikt. Loopt er al een opname
-    (lopend = naam van die app), dan telt het ook nog als die app alleen geluid afspeelt:
-    sommige apps laten de microfoon los als je jezelf dempt. Voor browsers geldt dat niet,
-    want die spelen ook geluid af als je na de meeting een filmpje kijkt.
+    Een meeting loopt zolang een meeting-app de microfoon gebruikt. Alleen geluid afspelen
+    telt niet: Teams en Zoom houden de speakers ook na de meeting open (voor beltonen en
+    meldingen), waardoor een opname anders nooit zou stoppen. Loopt er al een opname
+    (lopend = naam van die app), dan gaat die app voor als er meer apps de microfoon gebruiken.
     """
     eigen = set(eigen_pids)
     kandidaat = None
     for g in gebruikers:
-        if g.pid in eigen:
+        if g.pid in eigen or not g.invoer:
             continue
         app = herken_app(g, browsers=browsers, extra=extra)
         if not app:
             continue
-        if g.invoer:
-            if app.naam == lopend:
-                return app.naam
-            kandidaat = kandidaat or app.naam
-        elif g.uitvoer and lopend and app.naam == lopend and not app.browser:
+        if app.naam == lopend:
             return app.naam
+        kandidaat = kandidaat or app.naam
     return kandidaat
+
+
+def beschrijf(gebruikers, eigen_pids=()):
+    """Korte, vaste beschrijving van wie de microfoon gebruikt, voor het logboek en het venster."""
+    eigen = set(eigen_pids)
+    regels = []
+    for g in gebruikers:
+        if g.pid in eigen or not g.invoer:
+            continue
+        app = herken_app(g)
+        naam = app.naam if app else (g.bundel or os.path.basename(g.pad) or "pid %d" % g.pid)
+        regels.append(naam)
+    return sorted(set(regels))
 
 
 @dataclass
