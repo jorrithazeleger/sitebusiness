@@ -1,0 +1,7 @@
+# transcriptie op je eigen Mac (Whisper)
+faster-whisper>=1.1
+numpy
+# microfoon opnemen
+sounddevice>=0.4.6
+# icoon in de menubalk
+rumps>=0.4.0; sys_platform == "darwin"
