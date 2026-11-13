@@ -29,12 +29,12 @@ Daarna mag je de uitgepakte map weggooien.
 
 ## Gebruiken
 
-Rechtsboven in je menubalk staat een microfoontje (🎙). Verder hoef je niets te doen.
+Rechtsboven in je menubalk staat een microfoontje. Verder hoef je niets te doen.
 
 - **Meeting begint**: zodra een meeting-app een paar seconden je microfoon gebruikt, start de opname.
-  Je krijgt een melding en in de menubalk loopt de tijd mee (🔴 12:34).
+  Je krijgt een melding, het microfoontje krijgt een stip en de tijd loopt mee (12:34).
 - **Meeting klaar**: ongeveer 20 seconden nadat de meeting-app je microfoon loslaat, stopt de opname.
-  Het icoon wordt 📝 met een percentage terwijl Notulist het transcript maakt. Je krijgt een melding
+  Het icoon wordt een paar tekstregels met een percentage terwijl Notulist het transcript maakt. Je krijgt een melding
   als het klaar is.
 - **Transcripten**: in het menu onder **Recente meetings**, of in de map `Documenten/Notulist`. Elke
   meeting krijgt een eigen map, bijvoorbeeld `20261113-1430-zoom`, met daarin:
@@ -112,6 +112,7 @@ app/transcriptie.py  Whisper (faster-whisper), echo's en verzonnen zinnen eruit,
 app/instellingen.py  instellingen in ~/Library/Application Support/Notulist/instellingen.json
 app/mac/audiocap.swift  systeemgeluid opnemen met ScreenCaptureKit
 app/mac/bouw_app.py     bouwt Notulist.app (klein C-startprogramma dat Python laadt, plus audiocap)
+app/mac/teken_menubalk_iconen.py  tekent de menubalk-iconen in app/iconen
 tests/               python3 -m unittest discover tests
 ```
 

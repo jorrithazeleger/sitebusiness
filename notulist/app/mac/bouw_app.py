@@ -157,6 +157,12 @@ def build(app, script, swift_bron):
 
     helper_ok = bouw_helper(swift_bron, os.path.join(macos, "notulist-audiocap"))
 
+    # App-icoon (voor Programma's, de Finder en Systeeminstellingen), als het er is.
+    icns = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Notulist.icns")
+    heeft_icoon = os.path.exists(icns)
+    if heeft_icoon:
+        shutil.copyfile(icns, os.path.join(res, "Notulist.icns"))
+
     info = {
         "CFBundleName": "Notulist",
         "CFBundleDisplayName": "Notulist",
@@ -176,6 +182,8 @@ def build(app, script, swift_bron):
         "NSAudioCaptureUsageDescription":
             "Notulist neemt het geluid van je meetings op om er een transcript van te maken.",
     }
+    if heeft_icoon:
+        info["CFBundleIconFile"] = "Notulist"
     with open(os.path.join(contents, "Info.plist"), "wb") as fh:
         plistlib.dump(info, fh)
     with open(os.path.join(contents, "PkgInfo"), "w") as fh:
@@ -185,6 +193,7 @@ def build(app, script, swift_bron):
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", app], capture_output=True)
         lsreg = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                  "LaunchServices.framework/Support/lsregister")
+        os.utime(app, None)  # Finder laten zien dat het icoon veranderd is
         if os.path.exists(lsreg):
             subprocess.run([lsreg, "-f", app], capture_output=True)
     print("  App gebouwd%s." % ("" if helper_ok else " (zonder systeemgeluid)"))

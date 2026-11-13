@@ -33,6 +33,7 @@ from opname import Opname, helper_pad  # noqa: E402
 
 log = logging.getLogger("notulist")
 LOGBESTAND = os.path.expanduser("~/Library/Logs/Notulist.log")
+ICONEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "iconen")
 TIK = 2.0  # seconden tussen twee controles
 
 
@@ -234,7 +235,10 @@ def start_app():
 
     class NotulistApp(rumps.App):
         def __init__(self):
-            super().__init__("Notulist", title="🎙", quit_button=None)
+            # Effen "template"-icoon: macOS kleurt het zelf, net als de andere menubalk-iconen.
+            super().__init__("Notulist", icon=self.icoon_pad("rust"), template=True,
+                             quit_button=None)
+            self._icoon = "rust"
             self.status = rumps.MenuItem("Notulist start...")
             self.knop = rumps.MenuItem("Neem nu op", callback=self.wissel_opname)
             self.auto = rumps.MenuItem("Automatisch opnemen bij meetings", callback=self.wissel_auto)
@@ -262,6 +266,18 @@ def start_app():
                 open(vlag, "w").close()
                 threading.Thread(target=vraag_toestemmingen, daemon=True).start()
 
+        @staticmethod
+        def icoon_pad(naam):
+            return os.path.join(ICONEN, "menubalk-%s.png" % naam)
+
+        def toon(self, icoon, tekst=None):
+            """Menubalk: icoon (rust, opname of uitschrijven) met eventueel tekst erachter."""
+            if icoon != self._icoon:
+                self.icon = self.icoon_pad(icoon)
+                self._icoon = icoon
+            if tekst != self.title:
+                self.title = tekst
+
         def tik(self, _):
             kern.tik()
             self.ververs()
@@ -270,20 +286,20 @@ def start_app():
             opname = kern.opname
             if opname:
                 m, s = divmod(int(opname.duur()), 60)
-                self.title = "🔴 %d:%02d" % (m, s)
+                self.toon("opname", " %d:%02d" % (m, s))
                 self.status.title = "Neemt op: %s" % opname.app
                 self.knop.title = "Stop opname"
             elif kern.bezig_met_starten:
-                self.title = "🔴"
+                self.toon("opname")
                 self.status.title = "Opname starten..."
             else:
                 self.knop.title = "Neem nu op"
                 if kern.voortgang:
                     naam, f = kern.voortgang
-                    self.title = "📝 %d%%" % int(f * 100)
+                    self.toon("uitschrijven", " %d%%" % int(f * 100))
                     self.status.title = "Transcriberen: %s (%d%%)" % (naam, int(f * 100))
                 else:
-                    self.title = "🎙"
+                    self.toon("rust")
                     if kern.laatste_fout:
                         self.status.title = "Laatste poging mislukt, zie logboek"
                     elif config["automatisch_opnemen"] and audio is not None:
