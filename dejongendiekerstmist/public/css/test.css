@@ -1,0 +1,4 @@
+body{font-family:Georgia,serif;background:#14100c;color:#f3e6c8;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px}
+main{max-width:420px;background:#241a12;border:1px solid #6b5230;border-radius:12px;padding:28px;text-align:center}
+button{font:inherit;font-size:1.05rem;padding:12px 18px;border-radius:8px;border:0;background:#c99a3f;color:#1b120a;cursor:pointer;margin:6px}
+button.nee{background:#3a2c1f;color:#f3e6c8}

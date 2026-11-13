@@ -1,0 +1,15 @@
+{
+  "name": "De Jongen die Kerst Mist",
+  "short_name": "Kerst Mist",
+  "description": "Een adventsverhaal in vierentwintig brieven",
+  "lang": "nl",
+  "start_url": "/postkantoor",
+  "display": "standalone",
+  "background_color": "#070a14",
+  "theme_color": "#070a14",
+  "icons": [
+    { "src": "/img/icoon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/img/icoon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/img/icoon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

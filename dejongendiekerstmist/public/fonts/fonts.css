@@ -1,0 +1,7 @@
+/* Zelf gehoste lettertypen (Google Fonts, SIL Open Font License), alleen latin-subset */
+@font-face{font-family:'EB Garamond';font-style:normal;font-weight:400 600;font-display:swap;src:url('/fonts/EBGaramond-latin.woff2') format('woff2');}
+@font-face{font-family:'EB Garamond';font-style:italic;font-weight:400 600;font-display:swap;src:url('/fonts/EBGaramond-italic-latin.woff2') format('woff2');}
+@font-face{font-family:'IM Fell English';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/IMFellEnglish-400-latin.woff2') format('woff2');}
+@font-face{font-family:'IM Fell English';font-style:italic;font-weight:400;font-display:swap;src:url('/fonts/IMFellEnglish-400i-latin.woff2') format('woff2');}
+@font-face{font-family:'IM Fell English SC';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/IMFellEnglishSC-400-latin.woff2') format('woff2');}
+@font-face{font-family:'Pinyon Script';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/PinyonScript-400-latin.woff2') format('woff2');}

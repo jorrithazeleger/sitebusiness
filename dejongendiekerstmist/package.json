@@ -1,0 +1,14 @@
+{
+  "name": "dejongendiekerstmist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Adventsverhaal in 24 brieven: webapp voor www.dejongendiekerstmist.nl",
+  "type": "module",
+  "engines": { "node": ">=20.12" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js",
+    "sleutel": "node scripts/maak-sleutel.js"
+  }
+}
